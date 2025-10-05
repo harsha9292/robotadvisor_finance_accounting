@@ -16,6 +16,7 @@ from etf_allocations import get_etf_portfolio
 app = FastAPI(title="RoboAdvisor MVP")
 app.mount("/screens", StaticFiles(directory="screens", html=True), name="frontend")
 
+
 @app.get("/")
 def root():
     return FileResponse(os.path.join("screens", "index.html"))
@@ -25,7 +26,7 @@ class RiskInput(BaseModel):
     age: int
     income: float
     investment_goal: str
-    risk_tolerance: int  # 1-5
+    #risk_tolerance: int  # 1-5
     primary_goal: str
     access_time: str
     income_stability: str

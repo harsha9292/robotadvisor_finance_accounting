@@ -1,236 +1,218 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>RoboAdvisor MVP</title>
-  <style>
-    body { font-family: Arial; max-width: 800px; margin: auto; padding: 20px; }
-    h3 { margin-top: 30px; }
-    fieldset { margin-bottom: 20px; }
-    legend { font-weight: bold; }
-    label { display: block; margin: 5px 0; }
-    input[type="number"] { width: 60px; }
-    button { padding: 10px 20px; font-size: 16px; }
-    pre { background: #f4f4f4; padding: 10px; }
-  </style>
-</head>
-<body>
-  <h2>Robo-Advisor Questionnaire</h2>
-
-  <form id="questionnaire">
-
-    <!-- Basic Info -->
-    <fieldset>
-      <legend>Basic Info</legend>
-      Age: <input type="number" id="age" required><br/>
-      Income (€): <input type="number" id="income" required><br/>
-      Risk tolerance (1=low, 5=high): <input type="number" id="risk_tolerance" min="1" max="5" required>
-    </fieldset>
-
-    <!-- Section 1: Investment Objectives -->
-    <fieldset>
-      <legend>Section 1: Investment Objectives</legend>
-      1. What is your primary goal for investing?<br/>
-      <label><input type="radio" name="primary_goal" value="a" required> Saving for a future home purchase (3–7 years)</label>
-      <label><input type="radio" name="primary_goal" value="b"> Building long-term wealth (15+ years)</label>
-      <label><input type="radio" name="primary_goal" value="c"> Saving for family or children’s future (10–15 years)</label>
-      <label><input type="radio" name="primary_goal" value="d"> Building an emergency or opportunity fund (1–3 years)</label>
-      <label><input type="radio" name="primary_goal" value="e"> Other</label>
-
-      2. When do you expect to need access to the money you are investing?<br/>
-      <label><input type="radio" name="access_time" value="a" required> Within 3 years</label>
-      <label><input type="radio" name="access_time" value="b"> 3–7 years</label>
-      <label><input type="radio" name="access_time" value="c"> 7–15 years</label>
-      <label><input type="radio" name="access_time" value="d"> More than 15 years</label>
-    </fieldset>
-
-    <!-- Section 2: Financial Situation -->
-    <fieldset>
-      <legend>Section 2: Financial Situation</legend>
-      3. How stable is your current income and employment situation?<br/>
-      <label><input type="radio" name="income_stability" value="a" required> Very stable (permanent employment, predictable income)</label>
-      <label><input type="radio" name="income_stability" value="b"> Somewhat stable (temporary or freelance, consistent income)</label>
-      <label><input type="radio" name="income_stability" value="c"> Unstable (income varies significantly or not yet secure)</label>
-
-      4. Do you currently have an emergency fund covering at least 3–6 months of expenses?<br/>
-      <label><input type="radio" name="emergency_fund" value="a" required> Yes</label>
-      <label><input type="radio" name="emergency_fund" value="b"> Partially</label>
-      <label><input type="radio" name="emergency_fund" value="c"> No</label>
-    </fieldset>
-
-    <!-- Section 3: Investment Approach -->
-    <fieldset>
-      <legend>Section 3: Investment Approach</legend>
-      5. How do you plan to invest?<br/>
-      <label><input type="radio" name="investment_plan" value="a" required> One-time investment (a larger amount upfront)</label>
-      <label><input type="radio" name="investment_plan" value="b"> Monthly contributions (smaller, regular investments)</label>
-      <label><input type="radio" name="investment_plan" value="c"> Combination of both</label>
-      <label><input type="radio" name="investment_plan" value="d"> Not sure yet</label>
-
-      6. Approximately how much do you plan to invest initially?<br/>
-      <label><input type="radio" name="initial_investment" value="a" required> Less than €1,000</label>
-      <label><input type="radio" name="initial_investment" value="b"> €1,000 – €10,000</label>
-      <label><input type="radio" name="initial_investment" value="c"> Over €10,000</label>
-    </fieldset>
-
-    <!-- Section 4: Risk Profile -->
-    <fieldset>
-      <legend>Section 4: Risk Profile</legend>
-      7. If your investment lost 10–15% of its value in a short period, how would you most likely respond?<br/>
-      <label><input type="radio" name="reaction_to_loss" value="a" required> Sell immediately to prevent further losses</label>
-      <label><input type="radio" name="reaction_to_loss" value="b"> Wait and see if markets recover</label>
-      <label><input type="radio" name="reaction_to_loss" value="c"> Invest more to take advantage of lower prices</label>
-
-      8. How experienced are you with investing?<br/>
-      <label><input type="radio" name="investing_experience" value="a" required> Beginner – little or no prior investing experience</label>
-      <label><input type="radio" name="investing_experience" value="b"> Some experience – I have invested before (e.g., ETFs, funds, crypto)</label>
-      <label><input type="radio" name="investing_experience" value="c"> Experienced – I actively manage my investments</label>
-    </fieldset>
-
-    <!-- Section 5: Investment Preferences -->
-    <fieldset>
-      <legend>Section 5: Investment Preferences</legend>
-      9. What type of geographical focus would you prefer for your investments?<br/>
-      <label><input type="radio" name="geographical_focus" value="a" required> Global portfolio (worldwide diversification)</label>
-      <label><input type="radio" name="geographical_focus" value="b"> European-focused portfolio (primarily European markets)</label>
-      <label><input type="radio" name="geographical_focus" value="c"> No preference</label>
-
-      10. Would you like your portfolio to include sustainable or ESG-focused investments?<br/>
-      <label><input type="radio" name="esg_preference" value="a" required> Yes</label>
-      <label><input type="radio" name="esg_preference" value="b"> No</label>
-      <label><input type="radio" name="esg_preference" value="c"> No preference</label>
-
-      11. Are there any industries or sectors you prefer to avoid in your portfolio?<br/>
-      <label><input type="checkbox" name="sectors_to_avoid" value="a"> Fossil fuels and energy</label>
-      <label><input type="checkbox" name="sectors_to_avoid" value="b"> Tobacco and alcohol</label>
-      <label><input type="checkbox" name="sectors_to_avoid" value="c"> Weapons and defense</label>
-      <label><input type="checkbox" name="sectors_to_avoid" value="d"> Gambling</label>
-      <label><input type="checkbox" name="sectors_to_avoid" value="e"> None</label>
-    </fieldset>
-
-    <button type="submit">Submit</button>
-  </form>
-
-
-  <h3>Result</h3>
-  <pre id="result"></pre>
-
-<!-- Add Chart.js -->
+<meta charset="UTF-8">
+<title>MoneyMentorX</title>
+<script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 h-screen font-sans">
+
+<div class="flex flex-col md:flex-row h-screen p-6 gap-6">
+
+  <!-- Left Panel: Form Card -->
+  <div class="md:w-1/2 bg-white shadow-lg rounded-2xl p-6 overflow-y-auto">
+    <h1 class="text-3xl font-bold text-blue-700 text-center mb-6">🤖 MoneyMentorX</h1>
+    <form id="questionnaire" class="space-y-6">
+
+      <!-- Basic Info -->
+      <section class="space-y-2">
+        <h2 class="text-xl font-semibold text-blue-600">Basic Info</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <input type="number" id="age" placeholder="Age" class="border rounded-lg p-2 w-full" required>
+          <input type="number" id="income" placeholder="Income (€)" class="border rounded-lg p-2 w-full" required>
+        </div>
+      </section>
+
+      <!-- Investment Objectives -->
+      <section class="space-y-2">
+        <h2 class="text-xl font-semibold text-blue-600">Investment Objectives</h2>
+        <label>1️⃣ Primary Goal</label>
+        <select id="primary_goal" class="border rounded-lg p-2 w-full">
+          <option value="a">Saving for home (3–7 years)</option>
+          <option value="b">Long-term wealth (15+ years)</option>
+          <option value="c">Children’s future (10–15 years)</option>
+          <option value="d">Emergency fund (1–3 years)</option>
+          <option value="e">Other</option>
+        </select>
+
+        <label>2️⃣ Access Time</label>
+        <select id="access_time" class="border rounded-lg p-2 w-full">
+          <option value="a">Within 3 years</option>
+          <option value="b">3–7 years</option>
+          <option value="c">7–15 years</option>
+          <option value="d">More than 15 years</option>
+        </select>
+      </section>
+
+      <!-- Financial Situation -->
+      <section class="space-y-2">
+        <h2 class="text-xl font-semibold text-blue-600">Financial Situation</h2>
+        <label>3️⃣ Income Stability</label>
+        <select id="income_stability" class="border rounded-lg p-2 w-full">
+          <option value="a">Very stable</option>
+          <option value="b">Somewhat stable</option>
+          <option value="c">Unstable</option>
+        </select>
+
+        <label>4️⃣ Emergency Fund</label>
+        <select id="emergency_fund" class="border rounded-lg p-2 w-full">
+          <option value="a">Yes</option>
+          <option value="b">Partially</option>
+          <option value="c">No</option>
+        </select>
+      </section>
+
+      <!-- Investment Approach -->
+      <section class="space-y-2">
+        <h2 class="text-xl font-semibold text-blue-600">Investment Approach</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label>5️⃣ Investment Plan</label>
+            <select id="investment_plan" class="border rounded-lg p-2 w-full">
+              <option value="a">One-time investment</option>
+              <option value="b">Monthly contributions</option>
+              <option value="c">Combination</option>
+              <option value="d">Not sure</option>
+            </select>
+          </div>
+          <div>
+            <label>6️⃣ Initial Investment</label>
+            <select id="initial_investment" class="border rounded-lg p-2 w-full">
+              <option value="a">Less than €1,000</option>
+              <option value="b">€1,000–€10,000</option>
+              <option value="c">Over €10,000</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <button type="submit" class="bg-blue-600 text-white font-semibold py-2 px-6 rounded-lg hover:bg-blue-700 w-full mt-4">
+        💡 Assess My Profile
+      </button>
+    </form>
+  </div>
+
+<!-- Right Panel: Results + Chat -->
+<div class="md:w-1/2 flex flex-col gap-6">
+
+  <!-- Results Card -->
+  <div id="results" class="bg-white shadow-lg rounded-2xl p-4 flex-1 overflow-y-auto">
+    <h3 class="text-2xl font-semibold text-blue-700 mb-3">📊 Your Investment Profile</h3>
+    <div id="resultText" class="text-gray-700 mb-4">
+      <!-- Empty initially -->
+    </div>
+    <div id="etfCharts" class="mt-4 space-y-4"></div>
+  </div>
+
+  <!-- Chatbot Card -->
+  <div id="chatbot" class="bg-white shadow-lg rounded-2xl p-4 flex flex-col h-64">
+    <h4 class="text-xl font-semibold mb-2 text-blue-600">💬 Chat with MoneyMentorX</h4>
+    <div id="chatLog" class="flex-1 overflow-y-auto mb-2 space-y-2 text-gray-700"></div>
+    <div class="flex gap-2">
+      <input type="text" id="chatInput" class="flex-1 border rounded-lg p-2" placeholder="Ask me anything...">
+      <button id="chatSend" class="bg-blue-600 text-white rounded-lg px-4 py-2 hover:bg-blue-700">Send</button>
+    </div>
+  </div>
+</div>
+
+</div>
 
 <script>
-
 const API = window.location.origin;
 
-
-document.getElementById("questionnaire").onsubmit = async function(e) {
+// Form Submission
+document.getElementById("questionnaire").onsubmit = async function(e){
   e.preventDefault();
-
-  const getRadio = name => document.querySelector(`input[name="${name}"]:checked`)?.value || "";
-  const getNum = id => parseFloat(document.getElementById(id).value);
-
-  const sectors = Array.from(document.querySelectorAll('input[name="sectors_to_avoid"]:checked'))
-                        .map(cb => cb.value)
-                        .filter(v => v !== "e");
+  const getVal = id => document.getElementById(id).value;
 
   const data = {
-    age: getNum("age"),
-    income: getNum("income"),
-    investment_goal: "retirement",
-    risk_tolerance: getNum("risk_tolerance"),
-    primary_goal: getRadio("primary_goal"),
-    access_time: getRadio("access_time"),
-    income_stability: getRadio("income_stability"),
-    emergency_fund: getRadio("emergency_fund"),
-    investment_plan: getRadio("investment_plan"),
-    initial_investment: getRadio("initial_investment"),
-    reaction_to_loss: getRadio("reaction_to_loss"),
-    investing_experience: getRadio("investing_experience"),
-    geographical_focus: getRadio("geographical_focus"),
-    esg_preference: getRadio("esg_preference"),
-    sectors_to_avoid: sectors
+    age: parseFloat(getVal("age")),
+    income: parseFloat(getVal("income")),
+    investment_goal:"retirement",
+    primary_goal:getVal("primary_goal"),
+    access_time:getVal("access_time"),
+    income_stability:getVal("income_stability"),
+    emergency_fund:getVal("emergency_fund"),
+    investment_plan:getVal("investment_plan"),
+    initial_investment:getVal("initial_investment"),
+    reaction_to_loss:"b",
+    investing_experience:"a",
+    geographical_focus:"a",
+    esg_preference:"c",
+    sectors_to_avoid:[]
   };
 
-  // Step 1️⃣: Risk assessment
-  const res = await fetch(API + "/assess", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  const assessResult = await res.json();
+  document.getElementById("results").classList.add("hidden");
 
-  // Step 2️⃣: Get ETF recommendations
-  const etfRes = await fetch(API + "/recommend/" + assessResult.risk_bucket);
-  const etfResult = await etfRes.json();
+  try {
+    const res = await fetch(API+"/assess",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+    const assess = await res.json();
+    const etfRes = await fetch(API+"/recommend/"+assess.risk_bucket);
+    const etfs = await etfRes.json();
 
-  // Step 3️⃣: Show results
-  const resultDiv = document.getElementById("result");
-  resultDiv.innerHTML = `
-    <strong>Risk Bucket:</strong> ${assessResult.risk_bucket}<br>
-    <strong>Score:</strong> ${assessResult.score}<br><br>
-    <strong>Target Volatility:</strong> ${assessResult.target_volatility_pct_range[0]}–${assessResult.target_volatility_pct_range[1]}%<br>
-    <strong>Typical Allocation:</strong> ${assessResult.typical_allocation_hint.equity_pct}% Equity / ${assessResult.typical_allocation_hint.bond_pct}% Bond<br><br>
-    <strong>ETF Recommendations (Cluster ${etfResult.cluster}):</strong><br><br>
-  `;
-
-  // Step 4️⃣: Render ETF charts
-  Object.entries(etfResult.etfs).forEach(([ticker, info], idx) => {
-    if (!info.history) return;
-
-    const dates = Object.keys(info.history)
-      .map(d => new Date(d))
-      .sort((a, b) => a - b)
-      .map(d => d.toISOString().slice(0, 7)); // YYYY-MM
-
-    const prices = dates.map(d => info.history[d + "-01T00:00:00-04:00"] || Object.values(info.history)[dates.indexOf(d)]);
-
-    const container = document.createElement("div");
-    container.innerHTML = `
-      <h4>${ticker} — Return: ${(info.ann_return * 100).toFixed(2)}%, Volatility: ${(info.volatility * 100).toFixed(2)}%</h4>
-      <canvas id="chart${idx}" height="120"></canvas>
-      <hr>
+    const results=document.getElementById("results");
+    results.classList.remove("hidden");
+    document.getElementById("resultText").innerHTML=`
+      <p><strong>Risk Bucket:</strong> ${assess.risk_bucket}</p>
+      <p><strong>Score:</strong> ${assess.score}</p>
+      <p><strong>Target Volatility:</strong> ${assess.target_volatility_pct_range[0]}–${assess.target_volatility_pct_range[1]}%</p>
+      <p><strong>Typical Allocation:</strong> ${assess.typical_allocation_hint.equity_pct}% Equity / ${assess.typical_allocation_hint.bond_pct}% Bond</p>
+      <hr class="my-2">
+      <h4 class="text-lg font-semibold mb-2">ETF Recommendations (Cluster ${etfs.cluster})</h4>
     `;
-    resultDiv.appendChild(container);
 
-    new Chart(document.getElementById(`chart${idx}`), {
-      type: 'line',
-      data: {
-        labels: dates,
-        datasets: [{
-          label: 'Monthly Price (Last 3y)',
-          data: Object.values(info.history),
-          borderColor: 'steelblue',
-          borderWidth: 2,
-          fill: false,
-          tension: 0.25
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: false },
-          title: { display: false }
-        },
-        scales: {
-          x: {
-            ticks: {
-              autoSkip: true,
-              maxTicksLimit: 6 // show a few evenly spaced month/year labels
-            },
-            title: { display: true, text: "Time (Year-Month)" }
-          },
-          y: {
-            title: { display: true, text: "Price (€)" },
-            beginAtZero: false
-          }
-        }
-      }
+    const etfContainer=document.getElementById("etfCharts");
+    etfContainer.innerHTML="";
+    Object.entries(etfs.etfs).forEach(([ticker,info],idx)=>{
+      if(!info.history) return;
+      const card=document.createElement("div");
+      card.className="border rounded-lg p-2 shadow-sm";
+      card.innerHTML=`
+        <h5 class="font-semibold text-blue-600">${ticker}</h5>
+        <p>Return: ${(info.ann_return*100).toFixed(2)}%, Volatility: ${(info.volatility*100).toFixed(2)}%</p>
+        <canvas id="chart${idx}" height="100"></canvas>
+      `;
+      etfContainer.appendChild(card);
+      const dates=Object.keys(info.history).sort();
+      const prices=dates.map(d=>info.history[d]).filter(v=>v!=null);
+      new Chart(document.getElementById(`chart${idx}`),{
+        type:"line",
+        data:{labels:dates,datasets:[{label:ticker,data:prices,borderColor:"#3B82F6",tension:0.25,borderWidth:2}]},
+        options:{responsive:true,plugins:{legend:{display:false}}}
+      });
     });
-  });
+
+  } catch(err){console.error(err); alert("Error fetching results.");}
 };
+
+// Chatbot
+const chatInput=document.getElementById("chatInput");
+const chatSend=document.getElementById("chatSend");
+const chatLog=document.getElementById("chatLog");
+
+chatSend.onclick=async ()=>{
+  const msg=chatInput.value.trim();
+  if(!msg) return;
+  chatInput.value="";
+  const userMsg=document.createElement("div");
+  userMsg.className="text-right bg-gray-200 p-2 rounded";
+  userMsg.innerText=msg;
+  chatLog.appendChild(userMsg);
+  chatLog.scrollTop=chatLog.scrollHeight;
+
+  try{
+    const res=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:msg})});
+    const data=await res.json();
+    const botMsg=document.createElement("div");
+    botMsg.className="text-left bg-blue-600 text-white p-2 rounded";
+    botMsg.innerText=data.reply;
+    chatLog.appendChild(botMsg);
+    chatLog.scrollTop=chatLog.scrollHeight;
+  }catch(err){console.error(err);}
+};
+
+chatInput.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();chatSend.click();}});
 </script>
-
-
-
 </body>
 </html>
