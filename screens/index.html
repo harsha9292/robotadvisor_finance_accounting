@@ -202,7 +202,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
   try {
     showLoading("Analyzing your profile...");
 
-    const getVal = id => document.getElementById(id).value;
+    const getVal = id => document.getElementById(id)?.value || '';
 
     const data = {
       age: parseFloat(getVal("age")),
