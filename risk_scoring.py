@@ -44,16 +44,34 @@ def calculate_score(data: dict) -> int:
     """
     score = 0
 
-    # Example simple scoring logic — customize as needed
+    # Example simple scoring logic — align mapping keys with frontend form values
     score += data.get("risk_tolerance", 1) * 3
-    score += {"1A": 2, "1B": 3, "1C": 4, "1D": 1, "1E": 2}.get(data.get("primary_goal"), 0)
-    score += {"2A": 1, "2B": 2, "2C": 3, "2D": 4}.get(data.get("access_time"), 0)
-    score += {"3A": 4, "3B": 3, "3C": 1}.get(data.get("income_stability"), 0)
-    score += {"4A": 3, "4B": 2, "4C": 1}.get(data.get("emergency_fund"), 0)
-    score += {"5A": 3, "5B": 2, "5C": 3, "5D": 1}.get(data.get("investment_plan"), 0)
-    score += {"6A": 1, "6B": 2, "6C": 3}.get(data.get("initial_investment"), 0)
-    score += {"7A": 1, "7B": 3, "7C": 5}.get(data.get("reaction_to_loss"), 0)
-    score += {"8A": 1, "8B": 3, "8C": 5}.get(data.get("investing_experience"), 0)
+
+    # primary_goal uses single-letter values 'a'..'e' in the frontend
+    score += {"a": 2, "b": 3, "c": 4, "d": 1, "e": 2}.get(str(data.get("primary_goal", "")).lower(), 0)
+
+    # access_time mapping ('a'..'d')
+    score += {"a": 1, "b": 2, "c": 3, "d": 4}.get(str(data.get("access_time", "")).lower(), 0)
+
+    # income_stability ('a'..'c')
+    score += {"a": 4, "b": 3, "c": 1}.get(str(data.get("income_stability", "")).lower(), 0)
+
+    # emergency_fund ('a'..'c')
+    score += {"a": 3, "b": 2, "c": 1}.get(str(data.get("emergency_fund", "")).lower(), 0)
+
+    # investment_plan ('a'..'d')
+    score += {"a": 3, "b": 2, "c": 3, "d": 1}.get(str(data.get("investment_plan", "")).lower(), 0)
+
+    # initial_investment ('a'..'c')
+    score += {"a": 1, "b": 2, "c": 3}.get(str(data.get("initial_investment", "")).lower(), 0)
+
+    # reaction_to_loss may be a word like 'hold' or similar from frontend; map common values
+    rt = str(data.get("reaction_to_loss", "")).lower()
+    score += {"hold": 3, "sell": 1, "buy_more": 5}.get(rt, 0)
+
+    # investing_experience may be 'moderate', 'beginner', 'advanced'
+    ie = str(data.get("investing_experience", "")).lower()
+    score += {"beginner": 1, "moderate": 3, "advanced": 5}.get(ie, 0)
 
     # Normalize to valid band range
     return max(8, min(score, 40))
