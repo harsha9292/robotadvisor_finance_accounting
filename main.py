@@ -13,7 +13,7 @@ import json
 import requests
 import openai
 
-openai.api_key = "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"
+#openai.api_key = "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"
 #openai.api_key = os.getenv("OPENAI_API_KEY")
 HF_API_TOKEN = "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"
  
