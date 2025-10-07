@@ -159,39 +159,23 @@ def make_clusters(df):
 ETF_DF = make_clusters(fetch_etf_data())
 
 # ---------- Risk Assessment ----------
+# keep LATEST_ASSESSMENTS at module level
+LATEST_ASSESSMENTS = {}
+
 @app.post("/assess")
 async def assess(inputs: RiskInput):
+    """
+    Calculate score, determine profile, build summary & portfolio.
+    Stores last assessment in LATEST_ASSESSMENTS['latest'] for chat to use.
+    """
     try:
-        # Minimal logging: compute score and profile
         input_dict = inputs.dict()
         score = calculate_score(input_dict)
         profile_data = determine_risk_profile(score)
-        # Build a baseline summary from the risk profile so frontend always has something consistent
-        try:
-            base_tv = profile_data.get('target_volatility_pct_range', [0, 5])
-            hint = profile_data.get('typical_allocation_hint', {'equity_pct': 20, 'bond_pct': 80})
-            baseline_summary = {
-                'score': score,
-                'risk_bucket': profile_data.get('risk_bucket'),
-                'target_volatility_text': f"{base_tv[0]}–{base_tv[1]}%",
-                'typical_allocation_text': f"{hint.get('equity_pct')}% Equity / {hint.get('bond_pct')}% Bond",
-                'allocation': {},
-                'shortlisted_etfs': []
-            }
-        except Exception:
-            baseline_summary = {'score': score, 'risk_bucket': profile_data.get('risk_bucket')}
-        # Ensure the assessment score and bucket are always logged for visibility
-        try:
-            print(f"Assessment: Score={score}, RiskBucket={profile_data.get('risk_bucket')}")
-        except Exception:
-            pass
 
-        # Ensure ETF data is available
+        # Ensure ETF data and portfolio exist
         if not ETF_UNIVERSE:
             refresh_etf_universe()
-
-        if not ETF_UNIVERSE:
-            raise ValueError("Failed to initialize ETF universe")
 
         risk_bucket = profile_data.get("risk_bucket")
         if not risk_bucket:
@@ -201,40 +185,46 @@ async def assess(inputs: RiskInput):
         if not etf_portfolio:
             raise ValueError(f"No portfolio found for risk bucket {risk_bucket}")
 
-    # Build a concise summary for frontend display (attempt to enrich baseline_summary)
+        # Build frontend-friendly summary
         try:
-            alloc = etf_portfolio.get('allocation', {})
+            alloc = etf_portfolio.get("allocation", {})
             converted_alloc = {k: float(v) for k, v in alloc.items()}
             bond_tickers = {"AGG", "BND", "BNDX", "TLT"}
             equity_pct = sum(v for k, v in converted_alloc.items() if k not in bond_tickers)
             bond_pct = 1.0 - equity_pct
-            typical_allocation_text = f"{equity_pct:.0%} Equity / {bond_pct:.0%} Bond"
-            tv = float(etf_portfolio.get('target_volatility', 0.0))
-            if tv <= 0.05 and tv > 0:
-                target_vol_text = "0–5%"
-            else:
-                target_vol_text = f"{tv:.1%}"
-            summary = {
-                "score": score,
-                "risk_bucket": risk_bucket,
-                "target_volatility_text": target_vol_text,
-                "typical_allocation_text": typical_allocation_text,
-                "allocation": converted_alloc,
-                "shortlisted_etfs": list(converted_alloc.keys())
-            }
-            # attach simple projections (5-year) to the summary using GBM approximation
-            try:
-                mu = float(etf_portfolio.get('target_return', 0))
-                sigma = float(etf_portfolio.get('target_volatility', 0))
-                summary['projections'] = build_projections(mu, sigma, years=5)
-            except Exception:
-                summary['projections'] = {}
-            print(f"Score={score}, RiskBucket={risk_bucket}, TargetVol={target_vol_text}")
-            print(f"TypicalAllocation={typical_allocation_text}")
-            print(f"ShortlistedETFs={list(converted_alloc.keys())}")
+            typical_allocation_text = f"{round(equity_pct*100)}% Equity / {round(bond_pct*100)}% Bond"
+            tv = float(etf_portfolio.get("target_volatility", 0.0))
+            target_vol_text = "0–5%" if (tv <= 0.05 and tv > 0) else (f"{tv:.1%}" if tv else "N/A")
         except Exception:
-            # Fall back to baseline summary built earlier
-            summary = baseline_summary
+            converted_alloc = {}
+            typical_allocation_text = profile_data.get("typical_allocation_hint", {})
+            target_vol_text = "N/A"
+
+        # Attach simple 5-year projections using GBM approximation
+        try:
+            mu = float(etf_portfolio.get("target_return", 0))
+            sigma = float(etf_portfolio.get("target_volatility", 0))
+            projections = build_projections(mu, sigma, years=5)
+        except Exception:
+            projections = {}
+
+        summary = {
+            "score": score,
+            "risk_bucket": risk_bucket,
+            "target_volatility_text": target_vol_text,
+            "typical_allocation_text": typical_allocation_text,
+            "allocation": converted_alloc,
+            "shortlisted_etfs": list(converted_alloc.keys()),
+            "projections": projections
+        }
+
+        # Store the latest assessment (simple in-memory store)
+        LATEST_ASSESSMENTS["latest"] = {
+            "score": score,
+            **profile_data,
+            "summary": summary,
+            "etf_portfolio": etf_portfolio
+        }
 
         return {
             "score": score,
@@ -243,12 +233,11 @@ async def assess(inputs: RiskInput):
             "summary": summary,
             "status": "success"
         }
+
     except Exception as e:
-        print(f"Error in assessment: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing risk assessment: {str(e)}"
-        )
+        print(f"Error in assessment: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing risk assessment: {str(e)}")
+
 
 # ---------- ETF Recommendations ----------
 @app.get("/etf-universe")
@@ -404,52 +393,138 @@ async def get_portfolio_metrics(risk_level: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------- Chatbot ----------
+from fastapi import Request
+
+@app.post("/chat")
+def chat(input: ChatIn, request: Request):
+    """
+    Context-aware educational chatbot:
+    - If a recent assessment exists, use it to personalise replies.
+    - Otherwise return helpful general explanations.
+    """
+    msg = input.message.lower().strip()
+    assess = LATEST_ASSESSMENTS.get("latest")
+
+    # helper to safely access summary fields
+    def safe_summary_field(key, default=None):
+        return (assess.get("summary", {}) if assess else {}).get(key, default)
+
+    user_score = safe_summary_field("score")
+    user_risk_bucket = safe_summary_field("risk_bucket")
+    typical_alloc_text = safe_summary_field("typical_allocation_text", None)
+    projections = safe_summary_field("projections", None)
+    allocation = safe_summary_field("allocation", {})
+
+    # Matches and replies
+    if any(k in msg for k in ["risk", "score", "category"]):
+        if assess:
+            return {
+                "reply": (
+                    f"Your risk score is **{user_score}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
+                    f"This means your recommended portfolio targets roughly: **{typical_alloc_text or 'N/A'}**.\n\n"
+                    "Risk categories (simple):\n"
+                    "- **Conservative (low):** preserve capital, mostly bonds.\n"
+                    "- **Balanced (medium):** mix of equities & bonds for steady growth.\n"
+                    "- **Growth/Aggressive (high):** equity-heavy for higher long-term returns.\n\n"
+                    "We compute the score from your questionnaire (horizon, goals, emergency fund, reaction to losses, experience)."
+                )
+            }
+        else:
+            return {"reply": "I don't have an assessment for you yet — please complete the questionnaire so I can explain your risk score."}
+
+    if any(k in msg for k in ["portfolio", "allocation", "portfolio mix"]):
+        if assess:
+            # format top allocation rows
+            top = sorted(allocation.items(), key=lambda x: -float(x[1]))[:6]
+            top_text = ", ".join([f"{t[0]}:{round(t[1]*100,1)}%" for t in top]) if top else "N/A"
+            return {
+                "reply": (
+                    f"Your recommended portfolio (summary): {typical_alloc_text or 'N/A'}.\n"
+                    f"Top holdings: {top_text}.\n\n"
+                    "We choose ETFs to diversify across regions and asset classes, and weight them to match the risk target."
+                )
+            }
+        else:
+            return {"reply": "Complete the assessment first — then I can show the portfolio allocation and explain each holding."}
+
+    if any(k in msg for k in ["how", "calculate", "determine"]) and ("score" in msg or "risk" in msg):
+        return {
+            "reply": (
+                "We compute your risk score using rule-based points from your questionnaire: "
+                "time horizon, emergency fund, income stability, investment experience and reaction to losses. "
+                "Those answers map to a numeric score and to one of our risk buckets; the bucket drives the portfolio mix."
+            )
+        }
+
+    if any(k in msg for k in ["performance", "projection", "return"]):
+        if projections and projections.get("median"):
+            median_final = (projections["median"][-1] - 1) * 100
+            return {
+                "reply": (
+                    f"Our model projects a **median (most likely) 5-year growth** of about **{median_final:.1f}%** for this portfolio. "
+                    "These are model outputs (not guarantees) based on historical return & volatility assumptions."
+                )
+            }
+        else:
+            return {"reply": "No projection data available for your portfolio, but we can provide estimates once the portfolio is built."}
+
+    if any(k in msg for k in ["esg", "sustainable", "responsible"]):
+        return {
+            "reply": (
+                "Yes — we can build ESG/sustainable ETF portfolios. They avoid certain sectors and favour companies "
+                "with higher environmental, social and governance standards, while keeping diversification in mind."
+            )
+        }
+
+    # default fallback (personalised if we have assessment)
+    if assess:
+        return {
+            "reply": (
+                f"I have your latest assessment: risk score **{user_score}**, bucket **{user_risk_bucket}**, "
+                f"recommended split **{typical_alloc_text or 'N/A'}**. Ask me: 'Explain my score', 'Show portfolio', or 'Projection'."
+            )
+        }
+
+    return {
+        "reply": (
+            "I’m MoneyMentorX — I can explain risk categories, how your score is calculated, portfolio allocations, and projections. "
+            "Start by taking the questionnaire so I can personalise responses."
+        )
+    }
+
+# HF_MODEL = "bigscience/bloom"
+# HF_API_TOKEN = ""
 # @app.post("/chat")
 # def chat(input: ChatIn):
-#     msg = input.message.lower()
-#     if "risk" in msg:
-#         return {"reply": "We use a short questionnaire and your financial goals to assign a risk profile."}
-#     if "etf" in msg:
-#         return {"reply": "ETFs are chosen by AI clustering based on volatility, returns, and cost efficiency."}
-#     if "sustainable" in msg or "esg" in msg:
-#         return {"reply": "Yes, we can include ESG or sustainable ETFs if you prefer responsible investing."}
-#     if "performance" in msg:
-#         return {"reply": "Performance is based on 3-year historical returns and volatility metrics."}
-#     return {"reply": "I'm your robo-advisor assistant. Ask about risk, ETFs, ESG, or performance."}
+#     if not HF_API_TOKEN:
+#         raise HTTPException(status_code=500, detail="HF_API_TOKEN not set")
 
-HF_MODEL = "bigscience/bloom"
-HF_API_TOKEN = "test"
-@app.post("/chat")
-def chat(input: ChatIn):
-    if not HF_API_TOKEN:
-        raise HTTPException(status_code=500, detail="HF_API_TOKEN not set")
+#     prompt = input.message
 
-    prompt = input.message
+#     headers = {
+#         "Authorization": f"Bearer tytht",
+#         "Content-Type": "application/json"
+#     }
+#     payload = {
+#         "inputs": prompt,
+#         "parameters": {"max_new_tokens": 150},
+#         "options": {"use_cache": False, "wait_for_model": True}
+#     }
 
-    headers = {
-        "Authorization": f"Bearer tytht",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "inputs": prompt,
-        "parameters": {"max_new_tokens": 150},
-        "options": {"use_cache": False, "wait_for_model": True}
-    }
+#     try:
+#         response = requests.post(
+#             f"https://api-inference.huggingface.co/models/{HF_MODEL}",
+#             headers=headers,
+#             json=payload,
+#             timeout=60,
+#             verify=False
+#         )
+#         print(response.status_code, response.text)  # <-- Debug line
+#         response.raise_for_status()
+#         data = response.json()
+#         reply = data[0]["generated_text"] if isinstance(data, list) else str(data)
+#         return {"reply": reply}
 
-    try:
-        response = requests.post(
-            f"https://api-inference.huggingface.co/models/{HF_MODEL}",
-            headers=headers,
-            json=payload,
-            timeout=60,
-            verify=False
-        )
-        print(response.status_code, response.text)  # <-- Debug line
-        response.raise_for_status()
-        data = response.json()
-        reply = data[0]["generated_text"] if isinstance(data, list) else str(data)
-        return {"reply": reply}
-
-    except requests.exceptions.RequestException as e:
-        print("Request Exception:", e)  # <-- Debug line
-        raise HTTPException(status_code=500, detail=f"HuggingFace API error: {str(e)}")
+#     except requests.exceptions.RequestException as e:
+#         print("Request Exception:", e)  # <-- Debug line
+#         raise HTTPException(status_code=500, detail=f"HuggingFace API error: {str(e)}")
