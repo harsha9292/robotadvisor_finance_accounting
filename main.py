@@ -13,9 +13,8 @@ import json
 import requests
 import openai
 
-#openai.api_key = os.getenv("OPENAI_API_KEY")
-HF_API_TOKEN = ""
- 
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 import math
 
 class ChatIn(BaseModel):
