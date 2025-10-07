@@ -12,6 +12,7 @@ import os
 import json
 import requests
 import openai
+from fastapi import Request
 
 
 import math
@@ -393,8 +394,6 @@ async def get_portfolio_metrics(risk_level: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------- Chatbot ----------
-from fastapi import Request
-
 @app.post("/chat")
 def chat(input: ChatIn, request: Request):
     """
