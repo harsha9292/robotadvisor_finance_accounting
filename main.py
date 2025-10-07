@@ -13,8 +13,7 @@ import json
 import requests
 import openai
 
-HF_API_TOKEN = os.getenv("HF_API_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 import math
 
 class ChatIn(BaseModel):
@@ -419,6 +418,7 @@ async def get_portfolio_metrics(risk_level: int):
 #     return {"reply": "I'm your robo-advisor assistant. Ask about risk, ETFs, ESG, or performance."}
 
 HF_MODEL = "bigscience/bloom"
+HF_API_TOKEN = "test"
 @app.post("/chat")
 def chat(input: ChatIn):
     if not HF_API_TOKEN:
@@ -427,7 +427,7 @@ def chat(input: ChatIn):
     prompt = input.message
 
     headers = {
-        "Authorization": f"Bearer {HF_API_TOKEN}",
+        "Authorization": f"Bearer tytht",
         "Content-Type": "application/json"
     }
     payload = {
