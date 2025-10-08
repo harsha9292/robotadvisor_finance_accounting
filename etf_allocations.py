@@ -1,359 +1,337 @@
-from dataclasses import dataclass
-from typing import Dict, List, TypedDict
-from datetime import datetime, timedelta
-import numpy as np
+from typing import Dict, List, Any, Optional
 import pandas as pd
+import numpy as np
+# Note: yfinance and other imports are commented out as they were not used in the logic provided.
+from datetime import datetime, timedelta
 import yfinance as yf
-from scipy.optimize import minimize
-
-@dataclass
-class ETFMetrics:
-    ticker: str
-    name: str
-    net_assets: float  # in billions
-    avg_volume: float  # in millions
-    expense_ratio: float
-    historical_return: float
-    volatility: float
-    min_investment: float
-
-class PortfolioAllocation(TypedDict):
-    name: str
-    description: str
-    target_volatility: float
-    target_return: float
-    allocation: Dict[str, float]
-    sharpe_ratio: float
 
 
-def get_etf_metrics(ticker: str) -> ETFMetrics:
-    """Extract real-time metrics for an ETF using yfinance"""
-    try:
-        print(f"Fetching data for {ticker}...")
-        etf = yf.Ticker(ticker)
-        info = etf.info
-        if not info:
-            raise ValueError(f"No info available for {ticker}")
-            
-        # Get 3 years of historical data for return calculation
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=3*365)
-        hist = etf.history(start=start_date)
-        
-        if hist.empty:
-            raise ValueError(f"No historical data available for {ticker}")
-        
-        # Calculate returns and volatility
-        returns = hist['Close'].pct_change().dropna()
-        historical_return = ((1 + returns.mean()) ** 252 - 1)
-        volatility = returns.std() * np.sqrt(252)
-        
-        # Extract other metrics
-        net_assets = info.get('totalAssets', 0) / 1e9  # Convert to billions
-        avg_volume = info.get('averageVolume10Day', 0) / 1e6  # Convert to millions
-        expense_ratio = info.get('expenseRatio', 0)
-        current_price = info.get('regularMarketPrice', 100)
-        min_investment = current_price * 100  # Assume 100 shares minimum
-        
-        return ETFMetrics(
-            ticker=ticker,
-            name=info.get('longName', f"{ticker} ETF"),
-            net_assets=net_assets,
-            avg_volume=avg_volume,
-            expense_ratio=expense_ratio,
-            historical_return=historical_return,
-            volatility=volatility,
-            min_investment=min_investment
-        )
-    except Exception as e:
-        print(f"Error fetching metrics for {ticker}: {str(e)}")
+# Global ETF storage
+ETF_DATA: Dict[str, list] = {}
+
+# -----------------------------
+# Helper: clean ticker
+# -----------------------------
+def clean_ticker(raw_ticker: str) -> Optional[str]:
+    """
+    Extracts valid ticker from 'ETF / ISIN' format.
+    Returns None if ticker is empty or malformed.
+    """
+    if not raw_ticker:
         return None
+    parts = raw_ticker.split("/")
+    ticker = parts[0].strip()
+    return ticker if ticker else None
 
-def initialize_etf_universe() -> Dict[str, ETFMetrics]:
-    """Initialize ETF universe with real-time data"""
-    etf_tickers = {
-        'SPY': 'SPDR S&P 500 ETF',
-        'EFA': 'iShares MSCI EAFE ETF',
-        'EEM': 'iShares MSCI Emerging Markets ETF',
-        'AGG': 'iShares Core U.S. Aggregate Bond ETF',
-        'BNDX': 'Vanguard Total International Bond ETF'
+# -----------------------------
+# Load ETF data from CSV
+# -----------------------------
+def load_etf_data(path: str = "etf_data.csv"):
+    """
+    Load ETF data from CSV into global ETF_DATA dictionary.
+    Cleans tickers for yfinance.
+    """
+    global ETF_DATA
+    try:
+        df = pd.read_csv(path)
+        # Ensure correct types
+        if 'Expense_Ratio' in df.columns:
+            df['Expense_Ratio'] = df['Expense_Ratio'].astype(float)
+        if 'Risk_Level' in df.columns:
+            df['Risk_Level'] = df['Risk_Level'].astype(int)
+        
+        ETF_DATA.clear()
+        for _, row in df.iterrows():
+            cat = row['Category']
+            ticker = clean_ticker(row.get("Ticker_ISIN", "_"))
+            isin = None
+            if "/" in row.get("Ticker_ISIN", ""):
+                parts = row["Ticker_ISIN"].split("/")
+                if len(parts) > 1:
+                    isin = parts[1].strip() or None
+            
+            ETF_DATA.setdefault(cat, []).append({
+                "risk_level": row["Risk_Level"],
+                "ETF_Name": row["ETF_Name"],
+                "region": row["Region"],
+                "asset_type": row["Asset_Type"],
+                "description": row["Description"],
+                "Ticker": ticker,  # Cleaned for yfinance
+                "ISIN": isin,
+                "expense_ratio": row["Expense_Ratio"],
+                "typical_use": row["Typical_Use"],
+                "sustainability": row.get("Sustainability", "no")
+            })
+        print(f"✅ Loaded {len(df)} ETFs across {len(ETF_DATA)} categories.")
+    except FileNotFoundError:
+        print(f"Error: ETF data file not found at {path}. ETF_DATA is empty.")
+    except Exception as e:
+        print(f"Error loading ETF data: {e}")
+
+# -----------------------------
+# Refresh ETF universe
+# -----------------------------
+def refresh_etf_universe(path: str = "etf_data.csv"):
+    """
+    Reload ETF data from CSV (wrapper for load_etf_data)
+    """
+    load_etf_data(path)
+
+# -----------------------------
+# Risk scoring helpers
+# -----------------------------
+# Implemented the user's 10-bucket profiles, but adjusted scores to be continuous
+# across the full 6.00-18.00 range to ensure every score maps correctly.
+RISK_MATRIX = [
+    {"risk_bucket": 1, "profile": "Capital Preservation", "score_min": 6.00, "score_max": 7.20},
+    {"risk_bucket": 2, "profile": "Conservative", "score_min": 7.21, "score_max": 8.40},
+    {"risk_bucket": 3, "profile": "Cautious Balanced", "score_min": 8.41, "score_max": 9.60},
+    {"risk_bucket": 4, "profile": "Moderate", "score_min": 9.61, "score_max": 10.80},
+    {"risk_bucket": 5, "profile": "Balanced Growth", "score_min": 10.81, "score_max": 12.00},
+    {"risk_bucket": 6, "profile": "Growth", "score_min": 12.01, "score_max": 13.20},
+    {"risk_bucket": 7, "profile": "Aggressive Growth", "score_min": 13.21, "score_max": 14.40},
+    {"risk_bucket": 8, "profile": "Global Equity Focus", "score_min": 14.41, "score_max": 15.60},
+    {"risk_bucket": 9, "profile": "High Growth", "score_min": 15.61, "score_max": 16.80},
+    {"risk_bucket": 10, "profile": "Ultra-Aggressive", "score_min": 16.81, "score_max": 18.00},
+]
+
+# Allocation hint for the front-end display, mapped by risk_bucket
+# Interpolated 10-bucket allocation (Equity/Bond split)
+ALLOCATION_HINTS = {
+    1: {"equity_pct": 10, "bond_pct": 90},  
+    2: {"equity_pct": 20, "bond_pct": 80},
+    3: {"equity_pct": 30, "bond_pct": 70},
+    4: {"equity_pct": 40, "bond_pct": 60},
+    5: {"equity_pct": 50, "bond_pct": 50}, # Midpoint
+    6: {"equity_pct": 60, "bond_pct": 40},
+    7: {"equity_pct": 70, "bond_pct": 30},
+    8: {"equity_pct": 80, "bond_pct": 20},
+    9: {"equity_pct": 90, "bond_pct": 10},
+    10: {"equity_pct": 100, "bond_pct": 0}, # Max Aggressive
+}
+
+
+# -----------------------------
+# Risk & ETF selection functions
+# -----------------------------
+def calculate_score(data: dict) -> Dict[str, float]:
+    """
+    Calculates a composite risk score based on attitude, capacity, and tech scores,
+    and returns the final score along with normalized components.
+    
+    CRITICAL: This function requires 'data' to contain valid scores (1-3) for all 15 keys 
+    to prevent a KeyError. No default values are used.
+    """
+    # The function now uses direct dictionary access (data[key]), relying on the caller 
+    # to guarantee all 15 keys are present.
+    
+    # --- Attitude (6 questions, Min 6, Max 18, Range 12) ---
+    attitude_qs = [data[k] for k in [
+        "age_range_score","investment_goal_score","market_loss_scenario_score",
+        "risk_vs_reward_score","feelings_about_volatility_score","investment_experience_score"
+    ]]
+    attitude_score = sum(attitude_qs)
+    attitude_norm = (attitude_score - 6) / 12
+    
+    # --- Capacity (7 questions, Min 7, Max 21, Range 14) ---
+    capacity_qs = [data[k] for k in [
+        "income_stability_score","liabilities_score","emergency_fund_score",
+        "monthly_savings_score","initial_investment_score","investment_horizon_score","investment_approach_score"
+    ]]
+    capacity_score = sum(capacity_qs)
+    # Denominator is 14 (21-7) for full Capacity range
+    capacity_norm = (capacity_score - 7) / 14 
+    
+    # --- Tech (2 questions, Min 2, Max 6, Range 4) ---
+    tech_qs = [data[k] for k in ["app_experience_score","ai_advisor_score"]] 
+    tech_score = sum(tech_qs)
+    # Denominator is 4 (6-2) for full Tech range
+    tech_norm = (tech_score - 2) / 4
+    
+    # Weighted composite score (0 to 1)
+    composite_norm = attitude_norm*0.5 + capacity_norm*0.3 + tech_norm*0.2
+    
+    # Scale from [0, 1] to [6, 18]
+    score = (composite_norm * 12) + 6
+    
+    # Return the full score breakdown
+    return {
+        "score": round(score, 2),
+        "attitude_norm": round(attitude_norm, 4),
+        "capacity_norm": round(capacity_norm, 4),
+        "tech_norm": round(tech_norm, 4),
+        "composite_norm": round(composite_norm, 4)
     }
+
+def determine_risk_profile(data: dict) -> dict:
+    """
+    Calculates the composite score and maps it to a risk bucket, profile, 
+    and allocation hint, including the normalized component scores.
+    """
+    # CRITICAL CHANGE: Calculate all necessary score components and get the breakdown
+    score_data = calculate_score(data)
+    score = score_data['score']
     
-    universe = {}
-    for ticker, name in etf_tickers.items():
+    risk_bucket = RISK_MATRIX[0]["risk_bucket"] # Default to lowest
+    risk_profile = RISK_MATRIX[0]["profile"] # Default profile
+    
+    # Determine risk profile and bucket
+    for band in RISK_MATRIX:
+        # Check if the score falls within the band's range
+        if band["score_min"] <= score <= band["score_max"]:
+            risk_bucket = band["risk_bucket"]
+            risk_profile = band["profile"]
+            break
+    
+    # Fallback for out-of-range scores
+    if score < RISK_MATRIX[0]["score_min"]:
+        risk_bucket = RISK_MATRIX[0]["risk_bucket"] # Bucket 1
+        risk_profile = RISK_MATRIX[0]["profile"]
+    elif score > RISK_MATRIX[-1]["score_max"]:
+        risk_bucket = RISK_MATRIX[-1]["risk_bucket"] # Bucket 10
+        risk_profile = RISK_MATRIX[-1]["profile"]
+
+    return {
+        "risk_bucket": risk_bucket,
+        "risk_profile": risk_profile,
+        "typical_allocation_hint": ALLOCATION_HINTS.get(risk_bucket, {"equity_pct": 50, "bond_pct": 50}),
+        "final_composite_score": score, # The 6-18 score
+        "attitude_norm_score": score_data['attitude_norm'],
+        "capacity_norm_score": score_data['capacity_norm'],
+        "tech_norm_score": score_data['tech_norm'],
+        "weighted_composite_norm": score_data['composite_norm']
+    }
+
+def get_etf_candidates(region_pref: str, sustainable_pref: str):
+    """
+    Filter ETFs based on region and sustainability preference.
+    Returns a list of all matching ETF dictionaries.
+    """
+    region_pref = region_pref.lower()
+    sustainable_pref = sustainable_pref.lower()
+    
+    # Determine target category names based on preferences
+    target_categories = []
+    if sustainable_pref == "yes":
+        if "eu" in region_pref:
+            target_categories.append("European Sustainable")
+        elif "us" in region_pref:
+            target_categories.append("US Sustainable")
+        else: # Global/No specific region
+            target_categories.extend(["European Sustainable", "US Sustainable", "Global Sustainable"])
+    elif sustainable_pref == "no":
+        if "eu" in region_pref:
+            target_categories.append("European")
+        elif "us" in region_pref:
+            target_categories.append("US")
+        else: # Global/No specific region
+            target_categories.extend(["European", "US", "Global"])
+    else:
+        # No preference → combine all categories
+        return [etf for cat in ETF_DATA.values() for etf in cat]
+
+    # Collect ETFs from determined categories
+    etfs = []
+    for cat in target_categories:
+        etfs.extend(ETF_DATA.get(cat, []))
+    
+    return etfs
+
+# -----------------------------
+# Safe yfinance fetch
+# -----------------------------
+def get_live_performance(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch current price and 1-day % change for tickers.
+    Skips invalid/malformed tickers.
+    """
+    if not tickers:
+        return {}
+    
+    performance_data = {}
+    for ticker in tickers:
+        if not ticker:
+            continue
         try:
-            print(f"Fetching data for {ticker}...")
-            metrics = get_etf_metrics(ticker)
-            if metrics:
-                universe[ticker] = metrics
-            else:
-                print(f"Warning: Using default values for {ticker}")
-                universe[ticker] = ETFMetrics(
-                    ticker=ticker,
-                    name=name,
-                    net_assets=50.0,  # Conservative default
-                    avg_volume=10.0,   # Conservative default
-                    expense_ratio=0.005,  # Conservative default (0.5%)
-                    historical_return=0.07,  # Conservative default (7%)
-                    volatility=0.15,    # Conservative default (15%)
-                    min_investment=1000  # Default minimum
-                )
-        except Exception as e:
-            print(f"Error initializing {ticker}: {str(e)}")
-            # Use default values for this ETF
-            universe[ticker] = ETFMetrics(
-                ticker=ticker,
-                name=name,
-                net_assets=50.0,
-                avg_volume=10.0,
-                expense_ratio=0.005,
-                historical_return=0.07,
-                volatility=0.15,
-                min_investment=1000
-            )
-            universe[ticker] = ETFMetrics(
-                ticker=ticker,
-                name=name,
-                net_assets=50.0,  # Conservative default
-                avg_volume=10.0,   # Conservative default
-                expense_ratio=0.005,  # Conservative default (0.5%)
-                historical_return=0.07,  # Conservative default (7%)
-                volatility=0.15,    # Conservative default (15%)
-                min_investment=1000  # Default minimum
-            )
+            ticker_obj = yf.Ticker(ticker)
+            info = ticker_obj.info
+            current_price = info.get("currentPrice")
+            previous_close = info.get("previousClose")
+            daily_change_pct = None
+            if current_price and previous_close and previous_close != 0:
+                daily_change_pct = (current_price - previous_close) / previous_close * 100
+            performance_data[ticker] = {
+                "price": current_price,
+                "daily_change_pct": round(daily_change_pct, 2) if daily_change_pct is not None else None
+            }
+        except Exception:
+            performance_data[ticker] = {"price": None, "daily_change_pct": None}
+    return performance_data
+
+
+# -----------------------------
+# Get portfolio by risk bucket
+# -----------------------------
+def get_etf_portfolio(risk_bucket: int, candidate_etfs: Optional[List[Dict[str, Any]]] = None) -> dict:
+    """
+    Returns equal-weighted ETF portfolio with live performance.
+    """
+    # Determine source ETFs
+    source_list = candidate_etfs if candidate_etfs else [e for cat in ETF_DATA.values() for e in cat]
     
-    return universe
-
-# Initialize global variables
-ETF_UNIVERSE: Dict[str, ETFMetrics] = {}
-ETF_PORTFOLIOS: Dict[int, PortfolioAllocation] = {}
-
-def initialize_portfolios() -> Dict[int, PortfolioAllocation]:
-    """Initialize portfolio allocations with default values if needed"""
-    try:
-        return generate_portfolio_allocations()
-    except Exception as e:
-        print(f"Error generating portfolios: {str(e)}")
-        # Return default portfolio allocations
-        default_portfolios = {}
-        risk_levels = np.linspace(0.03, 0.14, 10)
-        for i, vol in enumerate(risk_levels, 1):
-            default_portfolios[i] = PortfolioAllocation(
-                name=f"Risk Level {i}",
-                description=f"Default portfolio for risk level {i}",
-                target_volatility=vol,
-                target_return=vol * 0.5,  # Conservative estimate
-                allocation={'SPY': 0.6, 'AGG': 0.4},  # Conservative default allocation
-                sharpe_ratio=0.5  # Conservative default
-            )
-        return default_portfolios
-
-def fetch_historical_data(start_date: str = '2019-01-01') -> pd.DataFrame:
-    """Fetch historical data for ETF universe"""
-    data = {}
-    for ticker in ETF_UNIVERSE.keys():
-        etf = yf.Ticker(ticker)
-        hist = etf.history(start=start_date)['Close']
-        data[ticker] = hist
-    return pd.DataFrame(data)
-
-def calculate_portfolio_metrics(returns: pd.DataFrame) -> tuple:
-    """Calculate portfolio metrics"""
-    annual_returns = returns.mean() * 252
-    annual_vol = returns.std() * np.sqrt(252)
-    cov_matrix = returns.cov() * 252
-    return annual_returns, annual_vol, cov_matrix
-
-def optimize_portfolio(returns: pd.DataFrame, target_vol: float) -> Dict[str, float]:
-    """Optimize portfolio for target volatility"""
-    n_assets = len(returns.columns)
-    annual_returns, _, cov_matrix = calculate_portfolio_metrics(returns)
+    # Map 10-bucket risk to 3-level ETF risk
+    etfs = []
+    for e in source_list:
+        level = 1
+        if 4 <= risk_bucket <= 7:
+            level = 2
+        elif risk_bucket >= 8:
+            level = 3
+        if e.get("risk_level") == level:
+            etfs.append(e)
     
-    def objective(weights):
-        port_return = np.sum(annual_returns * weights)
-        port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-        return -port_return / port_vol  # Maximize Sharpe ratio
-    
-    constraints = [
-        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
-        {'type': 'eq', 'fun': lambda x: 
-            np.sqrt(np.dot(x.T, np.dot(cov_matrix, x))) - target_vol}  # Target volatility
-    ]
-    
-    bounds = tuple((0, 1) for _ in range(n_assets))
-    result = minimize(
-        objective, 
-        np.array([1/n_assets] * n_assets),
-        method='SLSQP',
-        bounds=bounds,
-        constraints=constraints
-    )
-    
-    return dict(zip(returns.columns, result.x))
-
-def generate_portfolio_allocations() -> Dict[int, PortfolioAllocation]:
-    """Generate optimized portfolio allocations for each risk level"""
-    try:
-        if not ETF_UNIVERSE:
-            print("Warning: ETF_UNIVERSE is empty when generating portfolios")
-            return {}
-            
-        historical_data = fetch_historical_data()
-        if historical_data.empty:
-            print("Warning: No historical data available")
-            return {}
-            
-        returns = historical_data.pct_change().dropna()
-        
-        portfolios = {}
-        risk_levels = np.linspace(0.03, 0.14, 10)  # From 3% to 14% volatility
-        
-        for i, target_vol in enumerate(risk_levels, 1):
-            allocation = optimize_portfolio(returns, target_vol)
-            annual_returns, annual_vol, _ = calculate_portfolio_metrics(returns)
-            exp_return = sum(allocation[k] * annual_returns[k] for k in allocation)
-            
-            portfolios[i] = PortfolioAllocation(
-                name=f"Risk Level {i}",
-                description=f"Optimized portfolio for {target_vol:.1%} volatility",
-                target_volatility=target_vol,
-                target_return=exp_return,
-                allocation=allocation,
-                sharpe_ratio=exp_return/target_vol
-            )
-        
-        return portfolios
-    except Exception as e:
-        print(f"Error generating portfolio allocations: {str(e)}")
+    if not etfs:
         return {}
 
-def refresh_etf_universe() -> None:
-    """Refresh ETF universe with current data"""
-    try:
-        global ETF_UNIVERSE, ETF_PORTFOLIOS
-        print("Initializing ETF Universe...")
-        ETF_UNIVERSE = initialize_etf_universe()
-        print("ETF Universe initialized successfully")
-        
-        print("Generating portfolio allocations...")
-        ETF_PORTFOLIOS = initialize_portfolios()
-        print(f"Generated {len(ETF_PORTFOLIOS)} portfolios")
-    except Exception as e:
-        print(f"Error in refresh_etf_universe: {str(e)}")
-        if not ETF_PORTFOLIOS:
-            print("Initializing default portfolios...")
-            ETF_PORTFOLIOS = initialize_portfolios()
+    # Fetch live data
+    tickers_list = [e["Ticker"] for e in etfs if e.get("Ticker")]
+    live_performance = get_live_performance(tickers_list)
+    
+    n = len(etfs)
+    allocation = {}
+    etf_details = []
+    
+    for e in etfs:
+        name = e.get("ETF_Name")
+        ticker = e.get("Ticker")
+        if name:
+            allocation[name] = round(1/n, 4)
+            live_data = live_performance.get(ticker, {"price": None, "daily_change_pct": None})
+            enriched_etf = e.copy()
+            enriched_etf.update({
+                "current_price": live_data["price"],
+                "daily_change_pct": live_data["daily_change_pct"],
+                "allocation_pct": round(1/n * 100, 2)
+            })
+            etf_details.append(enriched_etf)
 
-# Initialize data
-print("Starting initial data refresh...")
-refresh_etf_universe()
-print("Initial data refresh completed")
-def validate_etf_universe() -> Dict[str, bool]:
-    """Validate ETFs meet minimum criteria"""
-    criteria = {
-        'min_assets': 1.0,        # $1B minimum
-        'min_volume': 1.0,        # 1M shares minimum
-        'max_expense': 0.0075,    # 0.75% maximum
-        'min_history': 3.0        # 3 years minimum
+    # Interpolate target return & volatility
+    target_r_min, target_r_max = 0.02, 0.12
+    target_v_min, target_v_max = 0.03, 0.18
+    target_r = target_r_min + (risk_bucket - 1) * (target_r_max - target_r_min) / 9
+    target_v = target_v_min + (risk_bucket - 1) * (target_v_max - target_v_min) / 9
+
+    return {
+        "name": f"Risk Bucket {risk_bucket} Portfolio",
+        "description": f"Equal-weighted ETF portfolio for risk bucket {risk_bucket}",
+        "allocation": allocation,
+        "etf_details": etf_details,
+        "target_return": round(target_r, 4),
+        "target_volatility": round(target_v, 4),
+        "sharpe_ratio": round((target_r - 0.01) / target_v, 4)
     }
-    
-    validation = {}
-    for ticker, metrics in ETF_UNIVERSE.items():
-        validation[ticker] = (
-            metrics.net_assets >= criteria['min_assets'] and
-            metrics.avg_volume >= criteria['min_volume'] and
-            metrics.expense_ratio <= criteria['max_expense']
-        )
-    
-    return validation
 
-def fetch_historical_data(start_date: str = '2019-01-01') -> pd.DataFrame:
-    """Fetch historical data for ETF universe"""
-    data = {}
-    for ticker in ETF_UNIVERSE.keys():
-        etf = yf.Ticker(ticker)
-        hist = etf.history(start=start_date)['Close']
-        data[ticker] = hist
-    return pd.DataFrame(data)
-
-def calculate_portfolio_metrics(returns: pd.DataFrame) -> tuple:
-    """Calculate portfolio metrics"""
-    annual_returns = returns.mean() * 252
-    annual_vol = returns.std() * np.sqrt(252)
-    cov_matrix = returns.cov() * 252
-    return annual_returns, annual_vol, cov_matrix
-
-def optimize_portfolio(returns: pd.DataFrame, target_vol: float) -> Dict[str, float]:
-    """Optimize portfolio for target volatility"""
-    n_assets = len(returns.columns)
-    annual_returns, _, cov_matrix = calculate_portfolio_metrics(returns)
-    
-    def objective(weights):
-        port_return = np.sum(annual_returns * weights)
-        port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-        return -port_return / port_vol  # Maximize Sharpe ratio
-    
-    constraints = [
-        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
-        {'type': 'eq', 'fun': lambda x: 
-            np.sqrt(np.dot(x.T, np.dot(cov_matrix, x))) - target_vol}  # Target volatility
-    ]
-    
-    bounds = tuple((0, 1) for _ in range(n_assets))
-    result = minimize(
-        objective, 
-        np.array([1/n_assets] * n_assets),
-        method='SLSQP',
-        bounds=bounds,
-        constraints=constraints
-    )
-    
-    return dict(zip(returns.columns, result.x))
-
-def generate_portfolio_allocations() -> Dict[int, PortfolioAllocation]:
-    """Generate optimized portfolio allocations for each risk level"""
-    historical_data = fetch_historical_data()
-    returns = historical_data.pct_change().dropna()
-    
-    portfolios = {}
-    risk_levels = np.linspace(0.03, 0.14, 10)  # From 3% to 14% volatility
-    
-    for i, target_vol in enumerate(risk_levels, 1):
-        allocation = optimize_portfolio(returns, target_vol)
-        annual_returns, annual_vol, _ = calculate_portfolio_metrics(returns)
-        exp_return = sum(allocation[k] * annual_returns[k] for k in allocation)
-        
-        portfolios[i] = PortfolioAllocation(
-            name=f"Risk Level {i}",
-            description=f"Optimized portfolio for {target_vol:.1%} volatility",
-            target_volatility=target_vol,
-            target_return=exp_return,
-            allocation=allocation,
-            sharpe_ratio=exp_return/target_vol
-        )
-    
-    return portfolios
-
-def get_etf_portfolio(risk_bucket: int) -> PortfolioAllocation:
-    """Get portfolio allocation for given risk level"""
-    try:
-        print(f"ETF_PORTFOLIOS keys: {list(ETF_PORTFOLIOS.keys())}")
-        print(f"Looking for risk bucket: {risk_bucket}")
-        
-        if not ETF_PORTFOLIOS:
-            print("Warning: ETF_PORTFOLIOS is empty, refreshing data...")
-            refresh_etf_universe()
-            
-        portfolio = ETF_PORTFOLIOS.get(risk_bucket)
-        if portfolio is None:
-            print(f"No portfolio found for risk bucket {risk_bucket}, using default")
-            portfolio = ETF_PORTFOLIOS.get(5)  # Default to moderate risk
-            
-        if portfolio is None:
-            raise ValueError(f"Could not find portfolio for risk bucket {risk_bucket} and no default available")
-            
-        print(f"Retrieved portfolio: {portfolio}")
-        return portfolio
-    except Exception as e:
-        print(f"Error in get_etf_portfolio: {str(e)}")
-        raise
+# -----------------------------
+# Initial load
+# -----------------------------
+load_etf_data("etf_data.csv")

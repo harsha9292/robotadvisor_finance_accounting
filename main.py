@@ -1,529 +1,410 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
 import os
-import json
-import requests
-import openai
-from fastapi import Request
-
-
 import math
+from fastapi.responses import FileResponse
+import json 
 
-class ChatIn(BaseModel):
-    message: str
-
-def build_projections(mu: float, sigma: float, years: int = 5) -> dict:
-    """Return projection series for 1..years using geometric Brownian motion quantiles.
-    mu and sigma are annualized decimal rates (e.g., 0.02, 0.03).
-    Returns factors (growth multiples) for median, 10th and 90th percentiles.
-    """
-    try:
-        z10 = -1.28155
-        z90 = 1.28155
-        years_list = list(range(1, years + 1))
-        median = []
-        p10 = []
-        p90 = []
-        for t in years_list:
-            m = math.exp((mu - 0.5 * sigma * sigma) * t)
-            q10 = math.exp((mu - 0.5 * sigma * sigma) * t + z10 * sigma * math.sqrt(t))
-            q90 = math.exp((mu - 0.5 * sigma * sigma) * t + z90 * sigma * math.sqrt(t))
-            median.append(m)
-            p10.append(q10)
-            p90.append(q90)
-        return {"years": years_list, "median": median, "p10": p10, "p90": p90}
-    except Exception:
-        return {"years": list(range(1, years + 1)), "median": [], "p10": [], "p90": []}
-
-from risk_scoring import calculate_score, determine_risk_profile
+# -----------------------------
+# Import modules for ETF logic
+# -----------------------------
 from etf_allocations import (
-    get_etf_portfolio, 
-    ETF_UNIVERSE, 
-    ETF_PORTFOLIOS,
-    ETFMetrics,
+    ETF_DATA,
+    get_etf_candidates,
+    get_etf_portfolio,
     refresh_etf_universe,
-    fetch_historical_data,
-    initialize_portfolios,
-    PortfolioAllocation
+    calculate_score,
+    determine_risk_profile
 )
-from portfolio_analysis import generate_etf_report, backtest_portfolio
-
 
 app = FastAPI(title="RoboAdvisor MVP")
-app.mount("/screens", StaticFiles(directory="screens", html=True), name="frontend")
-
-# Initialize ETF data at startup
-@app.on_event("startup")
-async def startup_event():
-    try:
-        # Minimal startup initialization - avoid verbose terminal output
-        refresh_etf_universe()
-        if not ETF_UNIVERSE or not ETF_PORTFOLIOS:
-            raise ValueError("ETF data not properly initialized")
-        
-    except Exception as e:
-        # Only output error message when startup fails
-        print(f"Startup error: {str(e)}")
-
-        if not ETF_UNIVERSE:
-            # initialize quietly
-            ETF_UNIVERSE.update({
-                'SPY': ETFMetrics(
-                    ticker='SPY',
-                    name='SPDR S&P 500 ETF',
-                    net_assets=380.0,
-                    avg_volume=70.0,
-                    expense_ratio=0.0009,
-                    historical_return=0.105,
-                    volatility=0.14,
-                    min_investment=1000
-                )
-            })
-
-        if not ETF_PORTFOLIOS:
-            ETF_PORTFOLIOS.update(initialize_portfolios())
-
-    # Final minimal validation log
-    print(f"Startup: ETF universe={len(ETF_UNIVERSE)}, portfolios={len(ETF_PORTFOLIOS)}")
-
 
 @app.get("/")
 def root():
+    """Serve the frontend HTML file."""
+    # Assuming 'screens/index.html' is correct based on prior context
+    # Use FileResponse for serving static files
     return FileResponse(os.path.join("screens", "index.html"))
 
-# ---------- Risk Questionnaire Input ----------
+# -----------------------------
+# Startup: refresh ETF data
+# -----------------------------
+@app.on_event("startup")
+async def startup_event():
+    try:
+        # Load the external data/universe of ETFs
+        refresh_etf_universe()
+        print(f"Startup: Loaded {len(ETF_DATA)} ETF categories.")
+    except Exception as e:
+        print(f"Startup error: {e}")
+
+# -----------------------------
+# Models: FIXED TO MATCH INCOMING PAYLOAD FIELDS
+# -----------------------------
 class RiskInput(BaseModel):
-    age: int
-    income: float
+    # Core Risk & Goals
+    age_range: str
     investment_goal: str
-    #risk_tolerance: int  # 1-5
-    primary_goal: str
-    access_time: str
+    investment_horizon: str
+    
+    # Financial Capacity
     income_stability: str
+    liabilities_ratio: str
     emergency_fund: str
-    investment_plan: str
+    monthly_savings: str
     initial_investment: str
+    
+    # Behavior & Attitude
     reaction_to_loss: str
+    risk_preference: str
+    volatility_feeling: str
     investing_experience: str
-    geographical_focus: str
-    esg_preference: str
+    investment_approach: str
+    
+    # Tech & Preferences
+    tech_usage: str
+    trust_ai: str
+    regional_focus: str 
+    esg_preference: str 
     sectors_to_avoid: Optional[List[str]] = []
 
-# ---------- Chat Input ----------
 class ChatIn(BaseModel):
     message: str
 
-# ---------- ETF Data + Clustering ----------
-TICKERS = ["VTI", "VEA", "VWO", "BND", "QQQ", "SPY", "TLT", "GLD"]
+# -----------------------------
+# Helper: GBM projections
+# -----------------------------
+def build_projections(mu: float, sigma: float, years: int = 5) -> dict:
+    """Calculates geometric Brownian motion projections for portfolio growth."""
+    z10, z90 = -1.28155, 1.28155 # Z-scores for 10th and 90th percentile
+    years_list = list(range(1, years + 1))
+    median, p10, p90 = [], [], []
+    try:
+        for t in years_list:
+            # Median/Expected Growth
+            m = math.exp((mu - 0.5 * sigma**2) * t)
+            # 10th Percentile (Conservative)
+            q10 = math.exp((mu - 0.5 * sigma**2) * t + z10 * sigma * math.sqrt(t))
+            # 90th Percentile (Optimistic)
+            q90 = math.exp((mu - 0.5 * sigma**2) * t + z90 * sigma * math.sqrt(t))
+            median.append(m)
+            p10.append(q10)
+            p90.append(q90)
+    except Exception as e:
+        print(f"Projection calculation error: {e}")
+        return {"years": years_list, "median": [], "p10": [], "p90": []}
+    return {"years": years_list, "median": median, "p10": p10, "p90": p90}
 
-def fetch_etf_data():
-    data = {}
-    for t in TICKERS:
-        etf = yf.Ticker(t)
-        hist = etf.history(period="3y")
-        if len(hist) < 200:
-            continue
-        ret = hist["Close"].pct_change().dropna()
-        ann_return = (1 + ret.mean()) ** 252 - 1
-        vol = ret.std() * np.sqrt(252)
-        avg_vol = hist["Volume"].mean()
-        info = etf.info
-        expense = info.get("expenseRatio", 0.002)
-        hist_monthly = hist["Close"].resample("ME").last()
-        data[t] = {
-            "ann_return": ann_return,
-            "volatility": vol,
-            "avg_volume": avg_vol,
-            "expense_ratio": expense,
-            "history": hist_monthly.to_dict()
-        }
-    df = pd.DataFrame(data).T
-    return df.dropna()
+# -----------------------------
+# Global: latest assessment
+# -----------------------------
+LATEST_ASSESSMENTS: Dict[str, dict] = {}
 
-def make_clusters(df):
-    if df.empty:
-        return df
-    features = df[["ann_return", "volatility", "avg_volume", "expense_ratio"]]
-    X = StandardScaler().fit_transform(features)
-    kmeans = KMeans(n_clusters=4, random_state=42).fit(X)
-    df["cluster"] = kmeans.labels_
-    return df
+# -----------------------------
+# NEW HELPER: Maps verbose answers to score (1, 2, or 3)
+# -----------------------------
+def get_score_from_value(value: str | float | int, field_name: str) -> int:
+    """
+    Translates verbose questionnaire answers into a numerical risk score (1, 2, or 3).
+    1 = Low Risk Answer (Conservative), 3 = High Risk Answer (Aggressive/High Capacity).
+    """
+    
+    # Handle numeric input (not used with the new Pydantic model)
+    if isinstance(value, (int, float)):
+        return 2
 
-ETF_DF = make_clusters(fetch_etf_data())
+    # Handle string input (verbose answers)
+    v = str(value).lower().strip()
+    
+    # --- Explicit Scoring for Fixed Fields ---
+    
+    # 1. Age Range (Younger = Higher Capacity/Risk)
+    if field_name == "age_range":
+        if "18–24 years" in v or "25–34 years" in v: return 3 # High Capacity
+        if "55–64 years" in v or "65+ years" in v: return 1 # Low Capacity
+        return 2 # Medium Capacity (35-54 years)
 
-# ---------- Risk Assessment ----------
-# keep LATEST_ASSESSMENTS at module level
-LATEST_ASSESSMENTS = {}
+    # 2. Liabilities Ratio (Higher percentage -> Lower Capacity Score)
+    if field_name == "liabilities_ratio":
+        if "less than 20%" in v: return 3
+        if "more than 40%" in v: return 1
+        return 2
 
+    # 3. Monthly Savings (Higher percentage -> Higher Capacity Score)
+    if field_name == "monthly_savings":
+        if "15% or more" in v or "10-15%" in v: return 3
+        if "< 5% of income" in v: return 1
+        return 2
+        
+    # --- Generic String Scoring ---
+    
+    # High-Risk indicators (Score 3)
+    high_risk_keys = ["growth", "7+ years", "10+ years", "invest more", "very stable", "significant", "experienced", "active investor", "take the riskier", "excited", "yes", "regularly", "lump sum and recurring"]
+    for key in high_risk_keys:
+        if key in v:
+            return 3
+
+    # Low-Risk indicators (Score 1)
+    low_risk_keys = ["preservation", "< 3 years", "sell immediately", "unstable", "none or minimal", "< €1,000", "beginner", "always the safer", "nervous", "no", "rarely", "one-time investment"]
+    for key in low_risk_keys:
+        if key in v:
+            return 1
+            
+    # Default to Medium Risk (Score 2) 
+    return 2
+
+
+# -----------------------------
+# /assess endpoint
+# -----------------------------
 @app.post("/assess")
 async def assess(inputs: RiskInput):
-    """
-    Calculate score, determine profile, build summary & portfolio.
-    Stores last assessment in LATEST_ASSESSMENTS['latest'] for chat to use.
-    """
     try:
         input_dict = inputs.dict()
+
+        # -----------------------------
+        # Map incoming fields to score keys
+        # -----------------------------
+        score_mapping = {
+            "age_range_score": ("age_range", "age_range"),
+            "investment_goal_score": ("investment_goal", "investment_goal"),
+            "market_loss_scenario_score": ("reaction_to_loss", "reaction_to_loss"),
+            "risk_vs_reward_score": ("risk_preference", "risk_preference"),
+            "feelings_about_volatility_score": ("volatility_feeling", "volatility_feeling"),
+            "investment_experience_score": ("investing_experience", "investing_experience"),
+            "income_stability_score": ("income_stability", "income_stability"),
+            "liabilities_score": ("liabilities_ratio", "liabilities_ratio"),
+            "emergency_fund_score": ("emergency_fund", "emergency_fund"),
+            "monthly_savings_score": ("monthly_savings", "monthly_savings"),
+            "initial_investment_score": ("initial_investment", "initial_investment"),
+            "investment_horizon_score": ("investment_horizon", "investment_horizon"),
+            "investment_approach_score": ("investment_approach", "investment_approach"),
+            "app_experience_score": ("tech_usage", "tech_usage"),
+            "ai_advisor_score": ("trust_ai", "trust_ai")
+        }
+
+        # Populate score keys using get_score_from_value, default to 2 if missing
+        for key, (field_name, _) in score_mapping.items():
+            val = input_dict.get(field_name)
+            input_dict[key] = get_score_from_value(val, field_name) if val is not None else 2
+
+        # -----------------------------
+        # Compute risk score & profile
+        # -----------------------------
         score = calculate_score(input_dict)
-        profile_data = determine_risk_profile(score)
+        profile_data = determine_risk_profile(input_dict)
+        risk_bucket = profile_data.get("risk_bucket", 5)
+        risk_profile = profile_data.get("risk_profile", "Balanced")
+        alloc_hint = profile_data.get("typical_allocation_hint", {"equity_pct": 50, "bond_pct": 50})
 
-        # Ensure ETF data and portfolio exist
-        if not ETF_UNIVERSE:
-            refresh_etf_universe()
+        # -----------------------------
+        # ETF selection
+        # -----------------------------
+        etf_candidates = get_etf_candidates(
+            region_pref=input_dict.get("regional_focus", "global"),
+            sustainable_pref=input_dict.get("esg_preference", "no")
+        )
 
-        risk_bucket = profile_data.get("risk_bucket")
-        if not risk_bucket:
-            raise ValueError("No risk bucket determined")
+        shortlisted = [
+            e["ETF_Name"] for e in etf_candidates
+            if isinstance(e, dict) and e.get("risk_level") == risk_bucket and "ETF_Name" in e
+        ]
 
-        etf_portfolio = get_etf_portfolio(risk_bucket)
-        if not etf_portfolio:
-            raise ValueError(f"No portfolio found for risk bucket {risk_bucket}")
+        allocation = {t: round(1/len(shortlisted), 2) for t in shortlisted} if shortlisted else {}
+        etf_portfolio = get_etf_portfolio(risk_bucket, candidate_etfs=etf_candidates)
+        if not etf_portfolio or not etf_portfolio.get("allocation"):
+            etf_portfolio = {
+                "allocation": allocation,
+                "target_return": 0.05,
+                "target_volatility": 0.1,
+                "sharpe_ratio": 0.5,
+                "name": f"Fallback Portfolio (Bucket {risk_bucket})",
+                "description": "Simple equal weight allocation due to missing data."
+            }
 
-        # Build frontend-friendly summary
-        try:
-            alloc = etf_portfolio.get("allocation", {})
-            converted_alloc = {k: float(v) for k, v in alloc.items()}
-            bond_tickers = {"AGG", "BND", "BNDX", "TLT"}
-            equity_pct = sum(v for k, v in converted_alloc.items() if k not in bond_tickers)
-            bond_pct = 1.0 - equity_pct
-            typical_allocation_text = f"{round(equity_pct*100)}% Equity / {round(bond_pct*100)}% Bond"
-            tv = float(etf_portfolio.get("target_volatility", 0.0))
-            target_vol_text = "0–5%" if (tv <= 0.05 and tv > 0) else (f"{tv:.1%}" if tv else "N/A")
-        except Exception:
-            converted_alloc = {}
-            typical_allocation_text = profile_data.get("typical_allocation_hint", {})
-            target_vol_text = "N/A"
+        # -----------------------------
+        # Build summary
+        # -----------------------------
+        equity_pct = alloc_hint["equity_pct"] / 100
+        bond_pct = alloc_hint["bond_pct"] / 100
+        typical_alloc_text = f"{round(equity_pct*100)}% Equity / {round(bond_pct*100)}% Fixed Income"
+        tv = float(etf_portfolio.get("target_volatility", 0))
+        target_vol_text = f"{tv*100:.1f}%" if tv else "N/A"
 
-        # Attach simple 5-year projections using GBM approximation
-        try:
-            mu = float(etf_portfolio.get("target_return", 0))
-            sigma = float(etf_portfolio.get("target_volatility", 0))
-            projections = build_projections(mu, sigma, years=5)
-        except Exception:
-            projections = {}
+        projections = build_projections(
+            mu=float(etf_portfolio.get("target_return", 0)),
+            sigma=float(etf_portfolio.get("target_volatility", 0)),
+            years=5
+        )
 
         summary = {
-            "score": score,
+            "score": score["score"],
+            "risk_profile": risk_profile,
             "risk_bucket": risk_bucket,
+            "allocation": etf_portfolio.get("allocation", allocation),
+            "shortlisted_etfs": shortlisted,
             "target_volatility_text": target_vol_text,
-            "typical_allocation_text": typical_allocation_text,
-            "allocation": converted_alloc,
-            "shortlisted_etfs": list(converted_alloc.keys()),
+            "typical_allocation_text": typical_alloc_text,
             "projections": projections
         }
 
-        # Store the latest assessment (simple in-memory store)
-        LATEST_ASSESSMENTS["latest"] = {
-            "score": score,
-            **profile_data,
-            "summary": summary,
-            "etf_portfolio": etf_portfolio
-        }
+        LATEST_ASSESSMENTS["latest"] = {"score": score, **profile_data, "summary": summary}
 
-        return {
-            "score": score,
-            **profile_data,
-            "etf_portfolio": etf_portfolio,
-            "summary": summary,
-            "status": "success"
-        }
+        return {"status": "success", "summary": summary, "etf_portfolio": etf_portfolio}
 
     except Exception as e:
-        print(f"Error in assessment: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing risk assessment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
 
-
-# ---------- ETF Recommendations ----------
-@app.get("/etf-universe")
-def get_etf_universe():
-    """Return details about available ETFs"""
-    return {
-        ticker: {
-            "name": etf.name,
-            "expense_ratio": etf.expense_ratio,
-            "avg_volume": etf.avg_volume,
-            "historical_return": etf.historical_return,
-            "volatility": etf.volatility
-        }
-        for ticker, etf in ETF_UNIVERSE.items()
-    }
-
+# -----------------------------
+# /recommend/{bucket} endpoint
+# -----------------------------
 @app.get("/recommend/{bucket}")
 async def recommend(bucket: int):
     try:
-        portfolio = get_etf_portfolio(bucket)
+        portfolio = get_etf_portfolio(bucket) 
         if not portfolio:
             raise ValueError(f"No portfolio found for bucket {bucket}")
 
-        # Convert numpy values to Python native types
-        converted_allocation = {k: float(v) for k, v in portfolio["allocation"].items()}
-
+        alloc = portfolio.get("allocation", {})
         response = {
-            "name": portfolio["name"],
-            "description": portfolio["description"],
-            "target_return": float(portfolio['target_return']),
-            "target_volatility": float(portfolio['target_volatility']),
-            "allocation": converted_allocation,
-            "sharpe_ratio": float(portfolio['sharpe_ratio']),
-            "risk_level": bucket
+            "name": portfolio.get("name", f"Bucket {bucket} Portfolio"),
+            "allocation": alloc,
+            "target_return": float(portfolio.get("target_return", 0)),
+            "target_volatility": float(portfolio.get("target_volatility", 0)),
+            "sharpe_ratio": float(portfolio.get("sharpe_ratio", 0)),
+            "risk_level": bucket,
         }
 
-        # Try to include per-ETF historical series and simple metrics for frontend charts
-        try:
-            hist_df = fetch_historical_data()
-            etfs = {}
-            for tk in converted_allocation.keys():
-                if hist_df is not None and tk in hist_df.columns:
-                    ser = hist_df[tk].dropna()
-                    history = {str(d.date()): float(v) for d, v in ser.items()}
-                    returns = ser.pct_change().dropna()
-                    if len(returns) > 0:
-                        ann_return = float((1 + returns.mean()) ** 252 - 1)
-                        vol = float(returns.std() * (252 ** 0.5))
-                    else:
-                        ann_return = 0.0
-                        vol = 0.0
-                    etfs[tk] = {"ann_return": ann_return, "volatility": vol, "history": history}
-                else:
-                    etfs[tk] = {"ann_return": None, "volatility": None, "history": {}}
-            response["etfs"] = etfs
-        except Exception as e:
-            print(f"Warning: could not attach ETF histories to response: {e}")
-
-        # Build and attach summary for frontend
-        try:
-            bond_tickers = {"AGG", "BND", "BNDX", "TLT"}
-            equity_pct = sum(v for k, v in converted_allocation.items() if k not in bond_tickers)
-            bond_pct = 1.0 - equity_pct
-            typical_allocation_text = f"{equity_pct:.0%} Equity / {bond_pct:.0%} Bond"
-            tv = float(response.get('target_volatility', 0.0))
-            target_vol_text = "0–5%" if (tv <= 0.05 and tv > 0) else f"{tv:.1%}"
-            summary = {
-                "risk_bucket": bucket,
-                "target_volatility_text": target_vol_text,
-                "typical_allocation_text": typical_allocation_text,
-                "allocation": converted_allocation,
-                "shortlisted_etfs": list(converted_allocation.keys())
-            }
-            # add projections based on portfolio expected return/vol
-            try:
-                mu = float(response.get('target_return', 0))
-                sigma = float(response.get('target_volatility', 0))
-                summary['projections'] = build_projections(mu, sigma, years=5)
-            except Exception:
-                summary['projections'] = {}
-            response["summary"] = summary
-            print(f"Recommend: RiskBucket={bucket}, TargetVol={target_vol_text}")
-            print(f"TypicalAllocation={typical_allocation_text}")
-            print(f"ShortlistedETFs={list(converted_allocation.keys())}")
-        except Exception:
-            pass
-
+        # Include projections
+        response["projections"] = build_projections(
+            mu=float(response["target_return"]),
+            sigma=float(response["target_volatility"]),
+            years=5
+        )
         return response
     except Exception as e:
-        print(f"Error in recommend endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating recommendation: {str(e)}")
 
-@app.get("/refresh-data")
-async def refresh_data():
-    """Refresh ETF data and regenerate portfolios"""
-    try:
-        refresh_etf_universe()
-        return {"message": "Data refreshed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# -----------------------------
+# /etf-universe endpoint
+# -----------------------------
+@app.get("/etf-universe")
+def get_etf_universe():
+    return ETF_DATA
 
-@app.get("/etf-analysis")
-async def get_etf_analysis():
-    """Get comprehensive ETF analysis"""
-    try:
-        report = generate_etf_report()
-        
-        # Convert DataFrames to dictionaries for JSON response
-        analysis = {
-            'etf_characteristics': report['etf_characteristics'].to_dict(),
-            'risk_mappings': report['risk_mappings'].to_dict(),
-            'performance_metrics': report['performance_metrics']
-        }
-        
-        return JSONResponse(content=analysis)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/portfolio-backtest/{risk_level}")
-async def backtest_risk_level(risk_level: int, start_date: str = "2019-01-01"):
-    """Backtest portfolio performance for given risk level"""
-    try:
-        portfolio = get_etf_portfolio(risk_level)
-        performance = backtest_portfolio(portfolio, start_date)
-        
-        return {
-            "risk_level": risk_level,
-            "portfolio_name": portfolio["name"],
-            "cumulative_returns": performance.to_dict()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/portfolio-metrics/{risk_level}")
-async def get_portfolio_metrics(risk_level: int):
-    """Get detailed metrics for a specific portfolio"""
-    try:
-        portfolio = get_etf_portfolio(risk_level)
-        report = generate_etf_report()
-        metrics = report['performance_metrics'][risk_level]
-        
-        return {
-            "portfolio_name": portfolio["name"],
-            "metrics": {
-                "expected_return": f"{metrics['return']:.2%}",
-                "volatility": f"{metrics['volatility']:.2%}",
-                "sharpe_ratio": f"{metrics['sharpe']:.2f}",
-                "var_95": f"{metrics['var_95']:.2%}"
-            },
-            "allocation": portfolio["allocation"]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ---------- Chatbot ----------
+# ---------- Chatbot (Context-Aware) ----------
 @app.post("/chat")
 def chat(input: ChatIn, request: Request):
     """
     Context-aware educational chatbot:
-    - If a recent assessment exists, use it to personalise replies.
-    - Otherwise return helpful general explanations.
+    - Uses the latest assessment to personalise replies.
+    - Provides risk score, risk bucket, portfolio allocations, and projections.
     """
     msg = input.message.lower().strip()
     assess = LATEST_ASSESSMENTS.get("latest")
 
-    # helper to safely access summary fields
-    def safe_summary_field(key, default=None):
-        return (assess.get("summary", {}) if assess else {}).get(key, default)
+    # helper to safely access fields
+    def safe_field(obj, key, default=None):
+        return obj.get(key, default) if obj else default
 
-    user_score = safe_summary_field("score")
-    user_risk_bucket = safe_summary_field("risk_bucket")
-    typical_alloc_text = safe_summary_field("typical_allocation_text", None)
-    projections = safe_summary_field("projections", None)
-    allocation = safe_summary_field("allocation", {})
+    if assess:
+        user_risk_profile = safe_field(assess, "risk_profile", "Balanced")
+        user_risk_bucket = safe_field(assess, "risk_bucket", 5)
+        summary = safe_field(assess, "summary", {})
+        etf_portfolio = safe_field(assess, "etf_portfolio", {})
+        typical_alloc_text = safe_field(summary, "typical_allocation_text", None)
+        projections = safe_field(summary, "projections", None)
+        allocation = safe_field(etf_portfolio, "allocation", {})
 
-    # Matches and replies
+    else:
+        user_risk_profile = None
+        user_risk_bucket = None
+        typical_alloc_text = None
+        projections = None
+        allocation = {}
+
+    # ---------- Risk Score & Profile ----------
     if any(k in msg for k in ["risk", "score", "category"]):
         if assess:
             return {
                 "reply": (
-                    f"Your risk score is **{user_score}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
-                    f"This means your recommended portfolio targets roughly: **{typical_alloc_text or 'N/A'}**.\n\n"
-                    "Risk categories (simple):\n"
-                    "- **Conservative (low):** preserve capital, mostly bonds.\n"
-                    "- **Balanced (medium):** mix of equities & bonds for steady growth.\n"
+                    f"Your risk score is **{user_risk_profile}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
+                    f"Recommended portfolio targets roughly: **{typical_alloc_text or 'N/A'}**.\n\n"
+                    "Risk categories:\n"
+                    "- **Conservative (low):** mostly bonds, capital preservation.\n"
+                    "- **Balanced (medium):** mix of equities & bonds.\n"
                     "- **Growth/Aggressive (high):** equity-heavy for higher long-term returns.\n\n"
-                    "We compute the score from your questionnaire (horizon, goals, emergency fund, reaction to losses, experience)."
+                    "The score comes from your questionnaire (time horizon, emergency fund, income stability, experience, reaction to losses)."
                 )
             }
         else:
-            return {"reply": "I don't have an assessment for you yet — please complete the questionnaire so I can explain your risk score."}
+            return {"reply": "I don't have an assessment for you yet — please complete the questionnaire."}
 
+    # ---------- Portfolio Allocation ----------
     if any(k in msg for k in ["portfolio", "allocation", "portfolio mix"]):
         if assess:
-            # format top allocation rows
-            top = sorted(allocation.items(), key=lambda x: -float(x[1]))[:6]
-            top_text = ", ".join([f"{t[0]}:{round(t[1]*100,1)}%" for t in top]) if top else "N/A"
+            top_holdings = sorted(allocation.items(), key=lambda x: -float(x[1]))[:6]
+            top_text_parts = [
+                f"**{etf_name}**: {round(weight*100,1)}%" for etf_name, weight in top_holdings
+            ]
+            top_text = ", ".join(top_text_parts) if top_text_parts else "N/A"
+
             return {
                 "reply": (
                     f"Your recommended portfolio (summary): {typical_alloc_text or 'N/A'}.\n"
                     f"Top holdings: {top_text}.\n\n"
-                    "We choose ETFs to diversify across regions and asset classes, and weight them to match the risk target."
+                    "We select ETFs to diversify across regions and asset classes, weighted to match your risk bucket."
                 )
             }
         else:
-            return {"reply": "Complete the assessment first — then I can show the portfolio allocation and explain each holding."}
+            return {"reply": "Complete the assessment first — then I can show the portfolio allocation."}
 
+    # ---------- How Score is Calculated ----------
     if any(k in msg for k in ["how", "calculate", "determine"]) and ("score" in msg or "risk" in msg):
         return {
             "reply": (
                 "We compute your risk score using rule-based points from your questionnaire: "
-                "time horizon, emergency fund, income stability, investment experience and reaction to losses. "
-                "Those answers map to a numeric score and to one of our risk buckets; the bucket drives the portfolio mix."
+                "time horizon, emergency fund, income stability, investment experience, and reaction to losses. "
+                "These map to a numeric score and a risk bucket, which determines portfolio allocation."
             )
         }
 
+    # ---------- Projections ----------
     if any(k in msg for k in ["performance", "projection", "return"]):
         if projections and projections.get("median"):
             median_final = (projections["median"][-1] - 1) * 100
             return {
                 "reply": (
-                    f"Our model projects a **median (most likely) 5-year growth** of about **{median_final:.1f}%** for this portfolio. "
-                    "These are model outputs (not guarantees) based on historical return & volatility assumptions."
+                    f"Our model projects a **median 5-year growth** of about **{median_final:.1f}%** for your portfolio. "
+                    "These are projections based on historical returns and volatility assumptions, not guarantees."
                 )
             }
         else:
-            return {"reply": "No projection data available for your portfolio, but we can provide estimates once the portfolio is built."}
+            return {"reply": "No projection data available yet — it will appear once the portfolio is built."}
 
+    # ---------- ESG / Sustainable Queries ----------
     if any(k in msg for k in ["esg", "sustainable", "responsible"]):
         return {
             "reply": (
                 "Yes — we can build ESG/sustainable ETF portfolios. They avoid certain sectors and favour companies "
-                "with higher environmental, social and governance standards, while keeping diversification in mind."
+                "with higher environmental, social, and governance standards, while maintaining diversification."
             )
         }
 
-    # default fallback (personalised if we have assessment)
+    # ---------- Fallback / Personalized ----------
     if assess:
         return {
             "reply": (
-                f"I have your latest assessment: risk score **{user_score}**, bucket **{user_risk_bucket}**, "
-                f"recommended split **{typical_alloc_text or 'N/A'}**. Ask me: 'Explain my score', 'Show portfolio', or 'Projection'."
+                f"I have your latest assessment: risk score **{user_risk_profile}**, bucket **{user_risk_bucket}**, "
+                f"recommended split **{typical_alloc_text or 'N/A'}**. "
+                "Ask me: 'Explain my score', 'Show portfolio', or 'Projection'."
             )
         }
 
     return {
         "reply": (
             "I’m MoneyMentorX — I can explain risk categories, how your score is calculated, portfolio allocations, and projections. "
-            "Start by taking the questionnaire so I can personalise responses."
+            "Start by completing the questionnaire so I can personalise responses."
         )
     }
-
-# HF_MODEL = "bigscience/bloom"
-# HF_API_TOKEN = ""
-# @app.post("/chat")
-# def chat(input: ChatIn):
-#     if not HF_API_TOKEN:
-#         raise HTTPException(status_code=500, detail="HF_API_TOKEN not set")
-
-#     prompt = input.message
-
-#     headers = {
-#         "Authorization": f"Bearer tytht",
-#         "Content-Type": "application/json"
-#     }
-#     payload = {
-#         "inputs": prompt,
-#         "parameters": {"max_new_tokens": 150},
-#         "options": {"use_cache": False, "wait_for_model": True}
-#     }
-
-#     try:
-#         response = requests.post(
-#             f"https://api-inference.huggingface.co/models/{HF_MODEL}",
-#             headers=headers,
-#             json=payload,
-#             timeout=60,
-#             verify=False
-#         )
-#         print(response.status_code, response.text)  # <-- Debug line
-#         response.raise_for_status()
-#         data = response.json()
-#         reply = data[0]["generated_text"] if isinstance(data, list) else str(data)
-#         return {"reply": reply}
-
-#     except requests.exceptions.RequestException as e:
-#         print("Request Exception:", e)  # <-- Debug line
-#         raise HTTPException(status_code=500, detail=f"HuggingFace API error: {str(e)}")
