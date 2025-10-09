@@ -289,7 +289,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-
 <script>
 const API = window.location.origin;
 
@@ -358,7 +357,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
 
     const getVal = id => document.getElementById(id).value;
 
-    // --- FIX: Collect ALL 17 new fields explicitly and send them to the backend ---
+    // --- Collect ALL 17 new fields explicitly and send them to the backend ---
     const data = {
         age_range: getVal("age_range"),
         annual_income: getVal("annual_income"),
@@ -468,7 +467,6 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
       document.getElementById("resultText").innerHTML = `
         <div class="bg-white p-6 rounded-2xl shadow-lg space-y-6">
     
-    <!-- Investment Profile Summary -->
     <div class="grid grid-cols-2 gap-6 bg-gray-50 p-4 rounded-xl shadow-inner border border-gray-100">
       <div>
         <p class="font-semibold text-gray-600">Risk Level</p>
@@ -487,7 +485,6 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
         <p class="text-gray-800">${summary.typical_allocation_text}</p>
       </div>
     </div>
-    <!-- 5-Year Projection Section -->
     <div class="bg-gray-50 p-4 rounded-xl shadow-inner border border-gray-100">
       <div id="projectionHeading" class="text-lg font-semibold text-blue-600 mb-2"></div>
       <canvas id="projectionChart" height="200"></canvas>
@@ -548,13 +545,25 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
     }
 
     renderAssessSummary(Object.assign({}, assess, { summary: summaryToUse }));
-    // Render projections chart if available
+    // Render projections chart if available (This is the first line graph, in resultText)
     renderProjectionsChart(summaryToUse);
 
     // Display ETF charts
     etfChartsDiv.innerHTML = "";
+    
+    // --- START OF MODIFICATION: APPEND SAVINGS GROWTH CARD FIRST IN ETF CHARTS DIV ---
+    const savingsCard = document.createElement('div');
+    savingsCard.className = 'bg-white p-4 rounded-xl shadow mb-4 border border-gray-100';
+    savingsCard.innerHTML = `
+      <h3 class="text-lg font-semibold text-blue-600 mb-2">💸 Savings Growth Projection</h3>
+      <canvas id="savingsGrowthChart" height="160"></canvas>
+      <p class="text-sm text-gray-500 mt-2">Projected growth over 10 years for different monthly savings rates.</p>
+    `;
+    etfChartsDiv.appendChild(savingsCard);
+    // --- END OF MODIFICATION ---
+
     if (etfData.etfs) {
-      // ... (existing ETF rendering logic remains the same)
+      // Individual ETF mode (will follow the savings card)
       Object.entries(etfData.etfs).forEach(([ticker, info], idx) => {
         try {
           if (!info?.history) return;
@@ -597,7 +606,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
         }
       });
     } else if (etfData.allocation) {
-      // Backend returned a single portfolio object (allocation + metrics).
+      // Portfolio mode (will follow the savings card)
       console.log('Rendering portfolio response:', etfData);
 
       const portfolio = etfData;
@@ -690,15 +699,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
       }
     }
 
-        // --- Append Savings Projection Chart Below Donut Chart ---
-    const savingsCard = document.createElement('div');
-    savingsCard.className = 'bg-white p-4 rounded-xl shadow mb-4 border border-gray-100';
-    savingsCard.innerHTML = `
-      <h3 class="text-lg font-semibold text-blue-600 mb-2">💸 Savings Growth Projection</h3>
-      <canvas id="savingsGrowthChart" height="160"></canvas>
-      <p class="text-sm text-gray-500 mt-2">Projected growth over 10 years for different monthly savings rates.</p>
-    `;
-    etfChartsDiv.appendChild(savingsCard);
+    // --- REMOVED: Original Savings Growth card append block was here ---
 
     // --- Render function ---
     function renderSavingsGrowthChart(portfolio, annualIncome) {
@@ -763,20 +764,16 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
     const annualIncome = Number(getVal("annual_income")) || 0;
     renderSavingsGrowthChart(portfolio, annualIncome);
 
-
-
     // --- FIX: Automatically send the assessment data to the chat for AI explanation ---
-    // Note: The `explainProfileAutomatically` function is missing from the provided JS, 
+    // Note: The 'explainProfileAutomatically' function is missing from the provided JS, 
     // but the original intent was likely just to populate the chat.
     // We will just log the data here for now.
     console.log("Assessment completed. You can now use the chatbot with personalized context.");
-
   } catch(err) {
     console.error(err);
     showError(err.message || "Error fetching results.");
   }
 };
-
 // -----------------------------
 // Elements
 // -----------------------------
@@ -815,43 +812,137 @@ document.getElementById('downloadReport').addEventListener('click', async () => 
     }
   }
 
-  // 2. Collect Investment Summary text
+  // --- 2. PRINT ALL TEXT CONTENT FIRST (excluding the chart from resultText) ---
+  
   const summaryDiv = document.getElementById('resultText');
-  if (summaryDiv) {
-    const summaryText = summaryDiv.innerText || "No summary available";
-    addTextBlock("Investment Summary", summaryText);
+  const etfChartsDiv = document.getElementById('etfCharts');
+
+  // Temporarily clone summaryDiv and remove the #projectionChart to prevent duplication
+  let summaryClone = summaryDiv.cloneNode(true);
+  const chartToRemove = summaryClone.querySelector('#projectionChart');
+  if (chartToRemove) {
+      // Remove the entire parent div of the chart if possible, to remove the blank space
+      const projectionSection = chartToRemove.closest('.bg-gray-50');
+      if (projectionSection) {
+          projectionSection.remove();
+      }
   }
 
-  // 3. ADDED: Collect 5-Year Projections text (Corrected Heading)
-  const projectionsDiv = document.getElementById('projectionsText');
-  if (projectionsDiv) {
-    const projectionsText = projectionsDiv.innerText || "Projections data not available";
-    addTextBlock("5-Year Investment Projections", projectionsText);
+  // A. Collect Investment Summary text (from modified summaryClone)
+  // Ensure html2canvas is loaded globally for this to work
+  if (window.html2canvas) { 
+    await html2canvas(summaryClone, { scale: 2 }).then(canvas => {
+        const imgData = canvas.toDataURL('image/png');
+        const imgWidth = pdfWidth - 2 * margin;
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+        if (imgHeight > 10) { // Only add if content exists
+          if (cursorY + imgHeight > pdfHeight - margin) {
+            pdf.addPage();
+            cursorY = margin;
+          }
+          addTextBlock("Investment Summary", ""); // Title for the summary text block
+          cursorY -= 10; // Back up slightly for the image
+          pdf.addImage(imgData, 'PNG', margin, cursorY, imgWidth, imgHeight);
+          cursorY += imgHeight + 20;
+        }
+    });
+  } else {
+    addTextBlock("Investment Summary", summaryDiv.innerText || "No summary available. html2canvas not loaded for formatted summary.");
   }
 
-  // 4. Collect all charts
-  const allCharts = document.querySelectorAll('canvas');
-  for (let i = 0; i < allCharts.length; i++) {
-    const chart = allCharts[i];
-    const imgData = chart.toDataURL('image/png');
 
-    const chartWidth = pdfWidth - 2 * margin;
-    const chartHeight = (chart.height * chartWidth) / chart.width;
+  // B. Collect Portfolio/Allocation TEXT (from etfChartsDiv plain HTML)
+  let etfClone = etfChartsDiv.cloneNode(true);
+  // Remove all chart wrappers from the clone
+  etfClone.querySelectorAll('div canvas').forEach(c => c.closest('div.bg-white')?.remove()); 
+  
+  // Re-select text elements from the cleaned clone
+  const textElements = etfClone.children;
 
-    // If chart overflows page, start new page
-    if (cursorY + chartHeight > pdfHeight - margin) {
-      pdf.addPage();
-      cursorY = margin;
+  if (textElements.length > 0) {
+      addTextBlock("Portfolio Details", ""); 
+      cursorY -= 10; 
+
+      if (window.html2canvas) {
+        await html2canvas(etfClone, { scale: 2 }).then(canvas => {
+            const imgData = canvas.toDataURL('image/png');
+            const imgWidth = pdfWidth - 2 * margin;
+            const imgHeight = (canvas.height * imgWidth) / canvas.width;
+            
+            if (cursorY + imgHeight > pdfHeight - margin) {
+                pdf.addPage();
+                cursorY = margin;
+            }
+            pdf.addImage(imgData, 'PNG', margin, cursorY, imgWidth, imgHeight);
+            cursorY += imgHeight + 20;
+        });
+      } else {
+        addTextBlock("Portfolio Details", etfChartsDiv.innerText);
+      }
+  }
+
+
+  // --- 3. PRINT ALL CHART CANVAS ELEMENTS TOGETHER IN THE NEW ORDER ---
+
+  addTextBlock("Investment Charts", "Visual projections and detailed history.");
+  
+  // Define the desired order of charts by their IDs/selectors
+  const chartSelectorsInOrder = [
+    // 1. 5-Year Investment Projections (Line Graph 1)
+    '#resultText #projectionChart',     
+    // 2. Savings Growth Projection (Line Graph 2)
+    '#etfCharts #savingsGrowthChart',   
+    // 3. ETF/Allocation Doughnut Chart
+    '#etfCharts canvas[width="200"]', 
+    // 4. Individual ETF History Charts
+    '#etfCharts canvas:not([width="200"]):not(#savingsGrowthChart)' 
+  ];
+
+  for (const selector of chartSelectorsInOrder) {
+    const charts = document.querySelectorAll(selector);
+    
+    // Iterate over found charts
+    for (const chart of charts) {
+      // Ensure the chart has rendered and has content
+      if (chart.width === 0 || chart.height === 0 || !chart._chartInstance) continue; 
+      
+      // Get the title to print above the chart image
+      let chartTitle;
+      if (chart.id === 'projectionChart') {
+          chartTitle = "5-Year Investment Projections";
+      } else if (chart.id === 'savingsGrowthChart') {
+          chartTitle = "Savings Growth Projection";
+      } else if (chart.width === 200) {
+          chartTitle = "Portfolio Allocation";
+      } else {
+          // Individual ETF History
+          chartTitle = chart.parentNode.querySelector('h5')?.innerText + " Price History" || "ETF History";
+      }
+
+      // Draw Title
+      pdf.setFontSize(12);
+      pdf.setTextColor(37, 99, 235);
+      pdf.text(chartTitle, margin, cursorY);
+      cursorY += 15;
+
+      // Draw Chart Image
+      const imgData = chart.toDataURL('image/png');
+      const chartWidth = pdfWidth - 2 * margin;
+      const chartHeight = (chart.height * chartWidth) / chart.width;
+
+      if (cursorY + chartHeight > pdfHeight - margin) {
+        pdf.addPage();
+        cursorY = margin;
+      }
+
+      pdf.addImage(imgData, 'PNG', margin, cursorY, chartWidth, chartHeight);
+      cursorY += chartHeight + 20; // space after chart
     }
-
-    pdf.addImage(imgData, 'PNG', margin, cursorY, chartWidth, chartHeight);
-    cursorY += chartHeight + 20; // space after chart
   }
 
   pdf.save('investment_report.pdf');
 });
-
-
 
 window.addEventListener('DOMContentLoaded', () => {
   const chatInput = document.getElementById("chatInput");
