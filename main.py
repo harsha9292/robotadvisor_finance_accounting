@@ -48,6 +48,7 @@ async def startup_event():
 class RiskInput(BaseModel):
     # Core Risk & Goals
     age_range: str
+    annual_income: str
     investment_goal: str
     investment_horizon: str
     
@@ -269,6 +270,22 @@ def dynamic_allocation(df: pd.DataFrame, risk_score: float):
 
     return allocation
 
+
+def calculate_var(mu: float, sigma: float, confidence: float = 0.95, horizon_years: int = 1):
+    """
+    Calculate 1-year Value at Risk (VaR) at a given confidence level using a normal approximation.
+    mu: expected annual return (decimal)
+    sigma: annual volatility (decimal)
+    confidence: confidence level (default 0.95)
+    horizon_years: time horizon in years (default 1)
+    """
+    from scipy.stats import norm
+    z = norm.ppf(1 - confidence)
+    # VaR formula: μ - zσ
+    var = mu + z * sigma * math.sqrt(horizon_years)
+    var_pct = (1 - math.exp(var)) * 100  # convert to percent loss
+    return round(abs(var_pct), 2)
+
 # -----------------------------
 # /assess endpoint (dynamic allocation)
 # -----------------------------
@@ -282,6 +299,7 @@ async def assess(inputs: RiskInput):
         # -----------------------------
         score_mapping = {
             "age_range_score": ("age_range", "age_range"),
+            "annual_income_score": ("annual_income", "annual_income"),
             "investment_goal_score": ("investment_goal", "investment_goal"),
             "market_loss_scenario_score": ("reaction_to_loss", "reaction_to_loss"),
             "risk_vs_reward_score": ("risk_preference", "risk_preference"),
@@ -378,6 +396,12 @@ async def assess(inputs: RiskInput):
         portfolio_expected_return = 0.05 + equity_target * 0.05  # crude linear approx
         portfolio_volatility = 0.08 + equity_target * 0.07
         sharpe_ratio = (portfolio_expected_return - 0.01) / portfolio_volatility
+        var_95 = calculate_var(
+            mu=portfolio_expected_return,
+            sigma=portfolio_volatility,
+            confidence=0.95,
+            horizon_years=1
+        )
         
         portfolio_name = profile_data['risk_profile']
         etf_portfolio = {
@@ -386,7 +410,9 @@ async def assess(inputs: RiskInput):
             "allocation": allocation,
             "target_return": round(portfolio_expected_return, 4),
             "target_volatility": round(portfolio_volatility, 4),
-            "sharpe_ratio": round(sharpe_ratio, 2)
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "value_at_risk": var_95 
+
         }
 
         # -----------------------------
@@ -396,7 +422,10 @@ async def assess(inputs: RiskInput):
             mu=portfolio_expected_return,
             sigma=portfolio_volatility,
             years=5
+            
         )
+
+
 
         # -----------------------------
         # Build summary
@@ -413,7 +442,8 @@ async def assess(inputs: RiskInput):
             "typical_allocation_text": f"{round(equity_target*100)}% Equity / {round(bond_target*100)}% Fixed Income",
             "projections": projections,
             "portfolio_expected_return": portfolio_expected_return,
-            "portfolio_volatility": portfolio_volatility
+            "portfolio_volatility": portfolio_volatility,
+            "value_at_risk": var_95 
         }
 
         # -----------------------------
@@ -481,6 +511,7 @@ def chat(input: ChatIn, request: Request):
     - Provides risk score, risk bucket, portfolio allocations, and projections.
     - Explains per-field contribution to the total score.
     """
+
     msg = input.message.lower().strip()
     assess = LATEST_ASSESSMENTS.get("latest")
 
@@ -497,7 +528,6 @@ def chat(input: ChatIn, request: Request):
         typical_alloc_text = safe_field(summary, "typical_allocation_text", "50% Equity / 50% Fixed Income")
         allocation = safe_field(etf_portfolio, "allocation", {})
         projections = safe_field(summary, "projections", None)
-        # Scores per field
         field_scores = {k: safe_field(profile_data, k) for k in profile_data if "_score" in k}
     else:
         profile_data = {}
@@ -509,6 +539,10 @@ def chat(input: ChatIn, request: Request):
         allocation = {}
         projections = None
         field_scores = {}
+
+    # ---------- Respond only if message matches known intents ----------
+    if not msg:
+        return {"reply": "Hello! I'm MoneyMentorX. Complete the questionnaire and I'll analyse your profile and allocation."}
 
     # ---------- Risk Score & Profile ----------
     if any(k in msg for k in ["risk", "score", "category"]):
@@ -532,7 +566,6 @@ def chat(input: ChatIn, request: Request):
         if field_scores:
             explanation_lines = []
             for field, score in field_scores.items():
-                # convert field names like 'age_range_score' -> 'Age Range'
                 pretty_field = field.replace("_score", "").replace("_", " ").title()
                 explanation_lines.append(f"- **{pretty_field}** → {score} points")
             total_score = safe_field(profile_data, "score", sum(field_scores.values()))
@@ -562,18 +595,11 @@ def chat(input: ChatIn, request: Request):
         else:
             return {"reply": "Complete the assessment first — then I can show the portfolio allocation."}
 
-    # # ---------- How Score is Calculated ----------
-    # if any(k in msg for k in ["how", "calculate", "determine"]) and ("score" in msg or "risk" in msg):
-    #     return {
-    #         "reply": (
-    #             "We compute your risk score using rule-based points from your questionnaire: "
-    #             "time horizon, emergency fund, income stability, investment experience, and reaction to losses. "
-    #             "Each field contributes 1–3 points that map to a risk bucket, which then determines portfolio allocation."
-    #         )
-    #     }
-    
     # ---------- How Score is Calculated ----------
     if any(k in msg for k in ["detail", "determine"]) and ("score" in msg or "risk" in msg):
+        if not profile_data:
+            return {"reply": "I don’t have your assessment yet — please complete the questionnaire first."}
+
         regional_focus = safe_field(profile_data, "regional_focus", "Global")
         esg_pref = safe_field(profile_data, "esg_preference", "No preference")
         return {
@@ -585,9 +611,8 @@ def chat(input: ChatIn, request: Request):
                 "- **Investment experience / Risk preference / Reaction to losses:** higher experience or comfort with losses increases the score.\n"
                 "- **Monthly savings / Initial investment:** higher amounts allow more risk.\n"
                 "- **Tech usage / Trust in AI:** can indicate comfort with modern investment tools.\n"
-                "- **Regional Focus:** your selection (currently **{regional_focus}**) determines which ETFs are included in your portfolio, "
-                "affecting diversification but not the numeric risk score directly.\n"
-                "- **ESG Preference:** selecting sustainable ETFs filters the universe accordingly.\n\n"
+                f"- **Regional Focus:** your selection (currently **{regional_focus}**) determines which ETFs are included in your portfolio.\n"
+                f"- **ESG Preference:** selecting sustainable ETFs filters the universe accordingly.\n\n"
                 "All these factors combine to produce a numeric risk score, mapped to a risk bucket, which then informs portfolio allocation."
             )
         }
@@ -614,19 +639,9 @@ def chat(input: ChatIn, request: Request):
             )
         }
 
-    # ---------- Fallback / Personalized ----------
-    if profile_data:
-        return {
-            "reply": (
-                f"I have your latest assessment: risk profile **{user_risk_profile}**, bucket **{user_risk_bucket}**, "
-                f"recommended split **{typical_alloc_text}**. "
-                "Ask me: 'Explain my score', 'Show portfolio', or 'Projection'."
-            )
-        }
-
+    # ---------- Fallback ----------
+    # If we reach here, either the user typed something random or assessment is missing
     return {
-        "reply": (
-            "I’m MoneyMentorX — I can explain risk categories, how your score is calculated, portfolio allocations, and projections. "
-            "Start by completing the questionnaire so I can personalise responses."
-        )
+        "reply": "I’m MoneyMentorX — I can explain risk categories, how your score is calculated, portfolio allocations, and projections. "
+                 "Start by completing the questionnaire so I can personalise responses."
     }

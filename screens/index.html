@@ -33,6 +33,8 @@
 <section>
   <h2 class="text-xl font-semibold text-blue-600 mb-2">🧠 Section 1 – About You</h2>
   <div class="space-y-4">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+  <!-- Age Range -->
     <div>
       <label for="age_range" class="block font-medium text-gray-700">Age Range</label>
       <select id="age_range" class="border border-gray-300 rounded-lg p-2 w-full focus:ring-blue-500 focus:border-blue-500">
@@ -42,6 +44,20 @@
         <option>55+ years</option>
       </select>
     </div>
+
+    <!-- Annual Income -->
+    <div>
+      <label for="annual_income" class="block font-medium text-gray-700">Annual Income (EUR)</label>
+      <input 
+        type="number" 
+        id="annual_income" 
+        name="annual_income"
+        placeholder="e.g. 75000"
+        min="0"
+        class="border border-gray-300 rounded-lg p-2 w-full focus:ring-blue-500 focus:border-blue-500"
+      />
+    </div>
+  </div>
 
     <div>
       <label for="investment_goal" class="block font-medium text-gray-700">Investment Goal</label>
@@ -229,14 +245,27 @@
 
   <!-- Right Panel -->
   <div class="md:w-1/2 flex flex-col gap-6">
-    <div id="results" class="bg-white shadow-xl rounded-2xl p-4 flex-1 overflow-y-auto">
-      <h3 class="text-2xl font-bold text-blue-700 mb-3 border-b pb-2">📊 Your Investment Profile</h3>
-      <div id="resultText" class="text-gray-700 mb-4">
-        <p class="text-gray-500">Fill out the questionnaire and click 'Assess My Profile' to view your results and recommended portfolio.</p>
+        <div id="results" class="bg-white shadow-xl rounded-2xl p-4 flex-1 overflow-y-auto">
+      <!-- Title + button container -->
+      <div class="flex items-center justify-between mb-3 border-b pb-2">
+        <h3 class="text-2xl font-bold text-blue-700 flex items-center gap-2">
+          📊 Your Investment Profile
+        </h3>
+
+       <button id="downloadReport"
+            class="bg-blue-600 text-sm text-white px-2 py-1 rounded-md shadow hover:bg-blue-700 transition">
+          📄 Download PDF
+        </button>
       </div>
+
+      <div id="resultText" class="text-gray-700 mb-4">
+        <p class="text-gray-500">
+          Fill out the questionnaire and click 'Assess My Profile' to view your results and recommended portfolio.
+        </p>
+      </div>
+
       <div id="etfCharts" class="mt-4 space-y-4"></div>
     </div>
-
     <div id="chatbot" class="bg-gradient-to-br from-indigo-50 to-white shadow-xl rounded-2xl p-5 flex flex-col h-72 border border-indigo-100">
       <h4 class="text-2xl font-bold mb-3 text-indigo-700 tracking-tight">
         💬 Chat with <span class="text-indigo-500">MoneyMentorX</span>
@@ -258,8 +287,12 @@
 
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
 <script>
 const API = window.location.origin;
+
 
 // Helper to try to parse response body (JSON or text)
 async function parseResponseBody(res) {
@@ -328,6 +361,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
     // --- FIX: Collect ALL 17 new fields explicitly and send them to the backend ---
     const data = {
         age_range: getVal("age_range"),
+        annual_income: getVal("annual_income"),
         investment_goal: getVal("investment_goal"),
         income_stability: getVal("income_stability"),
         liabilities_ratio: getVal("liabilities_ratio"),
@@ -583,6 +617,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
             <p>Annual Return: <span class="text-green-600 font-medium">${portfolio.target_return ? formatPercent(portfolio.target_return) : 'N/A'}</span></p>
             <p>Annual Volatility: <span class="text-blue-600 font-medium">${portfolio.target_volatility ? formatPercent(portfolio.target_volatility) : 'N/A'}</span></p>
             <p>Sharpe Ratio: <span class="text-gray-800 font-medium">${portfolio.sharpe_ratio != null ? Number(portfolio.sharpe_ratio).toFixed(2) : 'N/A'}</span></p>
+            <p>Value at Risk (95%):<span class="text-red-600 font-medium">${portfolio.value_at_risk != null ? Number(portfolio.value_at_risk).toFixed(2) + '%' : 'N/A'}</span></p>
           </div>
         </div>
       `;
@@ -613,8 +648,8 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
       const chartCard = document.createElement('div');
       chartCard.className = 'bg-white p-4 rounded-xl shadow mb-4 border border-gray-100';
       const canvas = document.createElement('canvas');
-      canvas.id = 'allocationChart';
-      canvas.height = 160;
+      canvas.width = 200;  // optional, can tweak
+      canvas.height = 140; // smaller height
       chartCard.appendChild(canvas);
       etfChartsDiv.appendChild(chartCard);
 
@@ -626,28 +661,25 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
 
       try {
         new Chart(canvas, {
-          type: 'doughnut',
-          data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
-          options: { 
-            responsive: true, 
-            plugins: { 
-              legend: { position: 'right' } ,
-              tooltip: {
-                callbacks: {
-                  label: function(context) {
-                    let label = context.label || '';
-                    if (label) {
-                      label += ': ';
-                    }
-                    if (context.parsed !== null) {
-                      label += (context.parsed * 100).toFixed(2) + '%';
-                    }
-                    return label;
-                  }
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+        options: { 
+          responsive: true,
+          maintainAspectRatio: false, // allows custom height/width
+          plugins: { 
+            legend: { position: 'right' },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  let label = context.label || '';
+                  if (label) label += ': ';
+                  if (context.parsed !== null) label += (context.parsed * 100).toFixed(2) + '%';
+                  return label;
                 }
               }
-            } 
+            }
           }
+        }
         });
       } catch (e) {
         console.error('Allocation chart error', e);
@@ -657,6 +689,81 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
         etfChartsDiv.appendChild(errNode);
       }
     }
+
+        // --- Append Savings Projection Chart Below Donut Chart ---
+    const savingsCard = document.createElement('div');
+    savingsCard.className = 'bg-white p-4 rounded-xl shadow mb-4 border border-gray-100';
+    savingsCard.innerHTML = `
+      <h3 class="text-lg font-semibold text-blue-600 mb-2">💸 Savings Growth Projection</h3>
+      <canvas id="savingsGrowthChart" height="160"></canvas>
+      <p class="text-sm text-gray-500 mt-2">Projected growth over 10 years for different monthly savings rates.</p>
+    `;
+    etfChartsDiv.appendChild(savingsCard);
+
+    // --- Render function ---
+    function renderSavingsGrowthChart(portfolio, annualIncome) {
+      if (!annualIncome || annualIncome <= 0 || !portfolio) return;
+
+      const ctx = document.getElementById('savingsGrowthChart').getContext('2d');
+      const targetReturn = portfolio.target_return || 0.06; // annual decimal
+      const monthlyReturn = Math.pow(1 + targetReturn, 1/12) - 1;
+
+      const savingsRates = [0.05, 0.10, 0.15, 0.25];
+      const months = 10 * 12;
+
+      const datasets = savingsRates.map(rate => {
+        let balance = 0;
+        const balances = [];
+        const monthlySaving = (annualIncome * rate) / 12;
+
+        for (let i = 0; i < months; i++) {
+          balance = balance * (1 + monthlyReturn) + monthlySaving;
+          if ((i + 1) % 12 === 0) balances.push(Math.round(balance));
+        }
+
+        const colorMap = {0.05: '#2563EB', 0.10: '#10B981', 0.15: '#F59E0B', 0.25: '#EF4444'};
+        return { 
+          label: `${rate*100}% Savings`, 
+          data: balances, 
+          borderColor: colorMap[rate], 
+          fill: false, 
+          tension: 0.25, 
+          pointRadius: 3 
+        };
+      });
+
+      const years = Array.from({ length: 10 }, (_, i) => `Year ${i+1}`);
+
+      if (ctx._chartInstance) ctx._chartInstance.destroy();
+
+      ctx._chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: { labels: years, datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: 'nearest', intersect: false },
+          plugins: {
+            legend: { position: 'bottom' },
+            tooltip: {
+              callbacks: {
+                label: ctx => `${ctx.dataset.label}: €${ctx.parsed.y.toLocaleString()}`
+              }
+            }
+          },
+          scales: {
+            y: { title: { display: true, text: 'Portfolio Value (EUR)' } },
+            x: { title: { display: true, text: 'Years' } }
+          }
+        }
+      });
+    }
+
+    // --- Call render function with current portfolio & income ---
+    const portfolio = etfData || summaryToUse; // pick whatever portfolio object is available
+    const annualIncome = Number(getVal("annual_income")) || 0;
+    renderSavingsGrowthChart(portfolio, annualIncome);
+
+
 
     // --- FIX: Automatically send the assessment data to the chat for AI explanation ---
     // Note: The `explainProfileAutomatically` function is missing from the provided JS, 
@@ -673,6 +780,79 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
 // -----------------------------
 // Elements
 // -----------------------------
+document.getElementById('downloadReport').addEventListener('click', async () => {
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF('p', 'pt', 'a4'); // portrait
+  const pdfWidth = pdf.internal.pageSize.getWidth();
+  const pdfHeight = pdf.internal.pageSize.getHeight();
+  const margin = 20;
+  let cursorY = margin;
+
+  // 1. MODIFIED helper to add text blocks (Title is CENTERED)
+  function addTextBlock(title, text) {
+    pdf.setFontSize(14);
+    pdf.setTextColor(37, 99, 235);
+    
+    // --- Center the Title ---
+    const titleWidth = pdf.getStringUnitWidth(title) * pdf.internal.getFontSize() / pdf.internal.scaleFactor;
+    const centerTitleX = (pdfWidth / 2) - (titleWidth / 2);
+    pdf.text(title, centerTitleX, cursorY);
+    // ------------------------
+    
+    cursorY += 20;
+
+    // Body text remains LEFT-ALIGNED at the margin
+    pdf.setFontSize(11);
+    pdf.setTextColor(0, 0, 0);
+    const lines = pdf.splitTextToSize(text, pdfWidth - 2 * margin);
+    pdf.text(lines, margin, cursorY); 
+    cursorY += lines.length * 14 + 10;
+
+    // Check if need a new page
+    if (cursorY > pdfHeight - margin) {
+      pdf.addPage();
+      cursorY = margin;
+    }
+  }
+
+  // 2. Collect Investment Summary text
+  const summaryDiv = document.getElementById('resultText');
+  if (summaryDiv) {
+    const summaryText = summaryDiv.innerText || "No summary available";
+    addTextBlock("Investment Summary", summaryText);
+  }
+
+  // 3. ADDED: Collect 5-Year Projections text (Corrected Heading)
+  const projectionsDiv = document.getElementById('projectionsText');
+  if (projectionsDiv) {
+    const projectionsText = projectionsDiv.innerText || "Projections data not available";
+    addTextBlock("5-Year Investment Projections", projectionsText);
+  }
+
+  // 4. Collect all charts
+  const allCharts = document.querySelectorAll('canvas');
+  for (let i = 0; i < allCharts.length; i++) {
+    const chart = allCharts[i];
+    const imgData = chart.toDataURL('image/png');
+
+    const chartWidth = pdfWidth - 2 * margin;
+    const chartHeight = (chart.height * chartWidth) / chart.width;
+
+    // If chart overflows page, start new page
+    if (cursorY + chartHeight > pdfHeight - margin) {
+      pdf.addPage();
+      cursorY = margin;
+    }
+
+    pdf.addImage(imgData, 'PNG', margin, cursorY, chartWidth, chartHeight);
+    cursorY += chartHeight + 20; // space after chart
+  }
+
+  pdf.save('investment_report.pdf');
+});
+
+
+
 window.addEventListener('DOMContentLoaded', () => {
   const chatInput = document.getElementById("chatInput");
   const chatSend = document.getElementById("chatSend");
