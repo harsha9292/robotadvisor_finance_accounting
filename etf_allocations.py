@@ -163,44 +163,89 @@ def calculate_score(data: dict) -> Dict[str, float]:
         "composite_norm": round(composite_norm, 4)
     }
 
-def determine_risk_profile(data: dict) -> dict:
+
+import numpy as np
+
+def compute_portfolio_metrics(returns: np.ndarray, weights: np.ndarray = None):
     """
-    Calculates the composite score and maps it to a risk bucket, profile, 
-    and allocation hint, including the normalized component scores.
+    Compute annualized expected return and volatility using daily returns.
+    Assumes 252 trading days per year.
     """
-    # CRITICAL CHANGE: Calculate all necessary score components and get the breakdown
-    score_data = calculate_score(data)
-    score = score_data['score']
-    
-    risk_bucket = RISK_MATRIX[0]["risk_bucket"] # Default to lowest
-    risk_profile = RISK_MATRIX[0]["profile"] # Default profile
-    
-    # Determine risk profile and bucket
-    for band in RISK_MATRIX:
-        # Check if the score falls within the band's range
-        if band["score_min"] <= score <= band["score_max"]:
-            risk_bucket = band["risk_bucket"]
-            risk_profile = band["profile"]
+    n_assets = returns.shape[1]
+    if weights is None:
+        weights = np.ones(n_assets) / n_assets  # equal weighting
+
+    # Daily portfolio returns
+    daily_portfolio_returns = returns @ weights
+
+    # Annualized return: (1 + mean_daily)^252 - 1
+    annual_return = (1 + np.mean(daily_portfolio_returns))**252 - 1
+
+    # Annualized volatility: std_daily * sqrt(252)
+    annual_volatility = np.std(daily_portfolio_returns) * np.sqrt(252)
+
+    return {
+        "expected_return": annual_return,
+        "volatility": annual_volatility
+    }
+
+
+def map_risk_bucket(volatility: float, behavioral_score: float = 0.0, vol_bands: list = None) -> int:
+    """
+    Map portfolio volatility (and optionally behavioral score) to a risk bucket 1–10.
+    behavioral_score: normalized 0–1, can adjust bucket slightly
+    """
+    if vol_bands is None:
+        # Default 10 buckets (adjust as needed)
+        vol_bands = [0.02, 0.05, 0.08, 0.10, 0.12, 0.15, 0.18, 0.22, 0.28, 1.0]
+
+    # Base bucket from volatility
+    base_bucket = 1
+    for i, v_max in enumerate(vol_bands, start=1):
+        if volatility <= v_max:
+            base_bucket = i
             break
-    
-    # Fallback for out-of-range scores
-    if score < RISK_MATRIX[0]["score_min"]:
-        risk_bucket = RISK_MATRIX[0]["risk_bucket"] # Bucket 1
-        risk_profile = RISK_MATRIX[0]["profile"]
-    elif score > RISK_MATRIX[-1]["score_max"]:
-        risk_bucket = RISK_MATRIX[-1]["risk_bucket"] # Bucket 10
-        risk_profile = RISK_MATRIX[-1]["profile"]
+
+    # Adjust bucket based on behavioral score (scale 0–2)
+    score_adjustment = int(np.round(behavioral_score * 2))
+    hybrid_bucket = min(max(base_bucket + score_adjustment, 1), 10)  # clamp 1–10
+
+    return hybrid_bucket
+
+
+def determine_risk_profile(data: dict, historical_returns: np.ndarray, weights: np.ndarray = None):
+    """
+    Calculates the hybrid risk profile using behavioral scores and mean-variance portfolio metrics.
+    """
+    # Step 1: Calculate normalized behavioral scores
+    score_data = calculate_score(data)
+    composite_norm = score_data['composite_norm']  # normalized 0–1
+
+    # Step 2: Compute annualized portfolio metrics
+    port_metrics = compute_portfolio_metrics(historical_returns, weights)
+
+    # Step 3: Map hybrid risk bucket using volatility + behavioral score
+    risk_bucket = map_risk_bucket(port_metrics['volatility'], composite_norm)
+
+    # Step 4: Map bucket to profile
+    risk_profile = RISK_MATRIX[risk_bucket-1]['profile']  # assuming RISK_MATRIX[0] = bucket 1
+
+    # Step 5: Allocation hint
+    allocation_hint = ALLOCATION_HINTS.get(risk_bucket, {"equity_pct": 50, "bond_pct": 50})
 
     return {
         "risk_bucket": risk_bucket,
         "risk_profile": risk_profile,
-        "typical_allocation_hint": ALLOCATION_HINTS.get(risk_bucket, {"equity_pct": 50, "bond_pct": 50}),
-        "final_composite_score": score, # The 6-18 score
+        "typical_allocation_hint": allocation_hint,
+        "final_composite_score": score_data['score'],
         "attitude_norm_score": score_data['attitude_norm'],
         "capacity_norm_score": score_data['capacity_norm'],
         "tech_norm_score": score_data['tech_norm'],
-        "weighted_composite_norm": score_data['composite_norm']
+        "weighted_composite_norm": composite_norm,
+        "portfolio_expected_return": port_metrics['expected_return'],
+        "portfolio_volatility": port_metrics['volatility']
     }
+
 
 def get_etf_candidates(region_pref: str, sustainable_pref: str):
     """

@@ -5,6 +5,9 @@ import os
 import math
 from fastapi.responses import FileResponse
 import json 
+import pandas as pd
+import numpy as np
+import yfinance as yf
 
 # -----------------------------
 # Import modules for ETF logic
@@ -155,8 +158,119 @@ def get_score_from_value(value: str | float | int, field_name: str) -> int:
     return 2
 
 
+def sanitize_for_json(obj):
+    """
+    Recursively replace np.nan, float('nan'), inf, -inf with 0.0.
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    else:
+        return obj
 # -----------------------------
-# /assess endpoint
+# Load ETF list from CSV at startup
+# -----------------------------
+ETF_DF = pd.read_csv("etf_data.csv")
+
+def get_selected_etfs(input_dict: dict):
+    """
+    Return ETF tickers filtered by user preferences (region + ESG).
+    """
+    region_pref = input_dict.get("regional_focus", "global")
+    esg_pref = input_dict.get("esg_preference", "no").lower()
+    
+    df = ETF_DF.copy()
+    
+    if region_pref.lower() != "global":
+        df = df[df['Region'].str.lower() == region_pref.lower()]
+    if esg_pref == "yes":
+        df = df[df['Sustainability'].str.lower() == 'yes']
+    
+    return df['Ticker_ISIN'].tolist()
+
+def get_historical_returns(tickers, period="1y"):
+    # Download all tickers at once
+    data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True)
+    
+    if len(tickers) == 1:
+        # single ticker returns a Series
+        data = data.to_frame()
+        data.columns = [tickers[0]]
+        returns = data.pct_change().dropna()
+    else:
+        # multiple tickers: extract 'Adj Close' or adjusted prices directly
+        try:
+            adj_close = pd.DataFrame({t: data[t]['Close'] for t in tickers})
+            returns = adj_close.pct_change().dropna()
+        except Exception as e:
+            print(f"Error fetching historical returns: {e}")
+            returns = pd.DataFrame()
+    
+    return returns
+
+
+REGION_MAPPING = {
+    "global": "global",
+    "europe (eu)": "europe",
+    "u.s. (us)": "us",
+    "no preference": "global"
+}
+
+
+def get_dynamic_etfs(input_dict: dict):
+    df = ETF_DF.copy()
+
+    # Normalize region input
+    region_input = input_dict.get("regional_focus", "Global").strip().lower()
+    region_pref = REGION_MAPPING.get(region_input, "global")
+
+    if region_pref != "global":
+        df['Region_clean'] = df['Region'].str.lower().str.strip()
+        df = df[df['Region_clean'] == region_pref]
+
+    # ESG filter
+    esg_pref = input_dict.get("esg_preference", "no").lower()
+    if esg_pref == "yes":
+        df['Sustainability_clean'] = df['Sustainability'].str.lower().str.strip()
+        df = df[df['Sustainability_clean'] == 'yes']
+
+    # Optional: remove ETFs from sectors_to_avoid
+    sectors_to_avoid = [s.lower().strip() for s in input_dict.get("sectors_to_avoid", [])]
+    if sectors_to_avoid:
+        df['Asset_Type_clean'] = df['Asset_Type'].str.lower().str.strip()
+        df = df[~df['Asset_Type_clean'].isin(sectors_to_avoid)]
+
+    return df
+
+def dynamic_allocation(df: pd.DataFrame, risk_score: float):
+    # Risk score 1–10 → equity %: 20–80, bonds = 100 - equity
+    equity_pct = min(max((risk_score / 10) * 80, 20), 80)
+    bond_pct = 100 - equity_pct
+
+    # Split equity portion equally among equity ETFs
+    equity_etfs = df[df['Asset_Type'].str.contains("Equity|World|Emerging|US|Europe", case=False)]
+    bond_etfs = df[df['Asset_Type'].str.contains("Bond|Treasury", case=False)]
+
+    allocation = {}
+    if not equity_etfs.empty:
+        eq_weight = equity_pct / len(equity_etfs)
+        for t in equity_etfs['Ticker_ISIN']:
+            allocation[t] = round(eq_weight / 100, 4)  # store as fraction
+
+    if not bond_etfs.empty:
+        bond_weight = bond_pct / len(bond_etfs)
+        for t in bond_etfs['Ticker_ISIN']:
+            allocation[t] = round(bond_weight / 100, 4)
+
+    return allocation
+
+# -----------------------------
+# /assess endpoint (dynamic allocation)
 # -----------------------------
 @app.post("/assess")
 async def assess(inputs: RiskInput):
@@ -164,7 +278,7 @@ async def assess(inputs: RiskInput):
         input_dict = inputs.dict()
 
         # -----------------------------
-        # Map incoming fields to score keys
+        # Map questionnaire answers to scores
         # -----------------------------
         score_mapping = {
             "age_range_score": ("age_range", "age_range"),
@@ -184,72 +298,137 @@ async def assess(inputs: RiskInput):
             "ai_advisor_score": ("trust_ai", "trust_ai")
         }
 
-        # Populate score keys using get_score_from_value, default to 2 if missing
         for key, (field_name, _) in score_mapping.items():
             val = input_dict.get(field_name)
             input_dict[key] = get_score_from_value(val, field_name) if val is not None else 2
 
-        # -----------------------------
-        # Compute risk score & profile
-        # -----------------------------
-        score = calculate_score(input_dict)
-        profile_data = determine_risk_profile(input_dict)
-        risk_bucket = profile_data.get("risk_bucket", 5)
-        risk_profile = profile_data.get("risk_profile", "Balanced")
-        alloc_hint = profile_data.get("typical_allocation_hint", {"equity_pct": 50, "bond_pct": 50})
+        print("\n--- QUESTION SCORES ---")
+        for k in score_mapping.keys():
+            print(f"{k}: {input_dict[k]}")
 
         # -----------------------------
-        # ETF selection
+        # Compute total score
         # -----------------------------
-        etf_candidates = get_etf_candidates(
-            region_pref=input_dict.get("regional_focus", "global"),
-            sustainable_pref=input_dict.get("esg_preference", "no")
-        )
+        score_data = calculate_score(input_dict)
+        total_score = score_data["score"]
+        print(f"\nTotal risk score: {total_score}")
 
-        shortlisted = [
-            e["ETF_Name"] for e in etf_candidates
-            if isinstance(e, dict) and e.get("risk_level") == risk_bucket and "ETF_Name" in e
-        ]
+        # -----------------------------
+        # Select ETFs dynamically based on preferences
+        # -----------------------------
+        df_filtered = get_dynamic_etfs(input_dict)
+        print(f"\nFiltered ETFs based on region & ESG: {len(df_filtered)} ETFs")
+        #print(df_filtered[['ETF_Name', 'Ticker_ISIN', 'Asset_Type']].head(10))
 
-        allocation = {t: round(1/len(shortlisted), 2) for t in shortlisted} if shortlisted else {}
-        etf_portfolio = get_etf_portfolio(risk_bucket, candidate_etfs=etf_candidates)
-        if not etf_portfolio or not etf_portfolio.get("allocation"):
-            etf_portfolio = {
-                "allocation": allocation,
-                "target_return": 0.05,
-                "target_volatility": 0.1,
-                "sharpe_ratio": 0.5,
-                "name": f"Fallback Portfolio (Bucket {risk_bucket})",
-                "description": "Simple equal weight allocation due to missing data."
+
+        tickers = df_filtered['Ticker_ISIN'].tolist()
+        returns_df = get_historical_returns(tickers)
+
+        if not returns_df.empty:
+            profile_data = determine_risk_profile(input_dict, returns_df.values)
+        else:
+            # fallback if no price data available
+            profile_data = {
+                "risk_bucket": 5,
+                "risk_profile": "Balanced Growth",
+                "portfolio_expected_return": 0.06,
+                "portfolio_volatility": 0.1,
+                "typical_allocation_hint": {"equity_pct": 60, "bond_pct": 40}
             }
+
+        # -----------------------------
+        # Dynamic allocation based on risk score
+        # -----------------------------
+        # Map total_score (6–18) linearly to equity % (20–90)
+        equity_target = min(max((total_score - 6) / (18 - 6) * 0.7 + 0.2, 0.2), 0.9)
+        bond_target = 1 - equity_target
+        print(f"\nEquity target: {equity_target*100:.1f}%, Bond target: {bond_target*100:.1f}%")
+
+        # Separate ETFs by type
+        equity_etfs = df_filtered[df_filtered['Asset_Type'].str.contains("Equity|World|US|Europe|Emerging", case=False)]
+        bond_etfs = df_filtered[df_filtered['Asset_Type'].str.contains("Bond|Treasury", case=False)]
+
+        allocation = {}
+
+        if not equity_etfs.empty:
+            eq_weight = equity_target / len(equity_etfs)
+            for t in equity_etfs['Ticker_ISIN']:
+                allocation[t] = eq_weight
+
+        if not bond_etfs.empty:
+            bond_weight = bond_target / len(bond_etfs)
+            for t in bond_etfs['Ticker_ISIN']:
+                allocation[t] = bond_weight
+
+        # Normalize allocation to sum to 1 exactly
+        total_alloc = sum(allocation.values())
+        if total_alloc > 0:
+            for k in allocation:
+                allocation[k] /= total_alloc
+
+        print("\n--- DYNAMIC ETF ALLOCATION ---")
+        for ticker, weight in allocation.items():
+            print(f"{ticker}: {weight*100:.2f}%")
+        if not allocation:
+            print("No ETFs matched the selection criteria.")
+
+        # -----------------------------
+        # Portfolio metrics (placeholder, can replace with historical returns later)
+        # -----------------------------
+        portfolio_expected_return = 0.05 + equity_target * 0.05  # crude linear approx
+        portfolio_volatility = 0.08 + equity_target * 0.07
+        sharpe_ratio = (portfolio_expected_return - 0.01) / portfolio_volatility
+        
+        portfolio_name = profile_data['risk_profile']
+        etf_portfolio = {
+            "name": portfolio_name,
+            "description": f"{portfolio_name} built dynamically based on your risk score and investment preferences.",
+            "allocation": allocation,
+            "target_return": round(portfolio_expected_return, 4),
+            "target_volatility": round(portfolio_volatility, 4),
+            "sharpe_ratio": round(sharpe_ratio, 2)
+        }
+
+        # -----------------------------
+        # Projections
+        # -----------------------------
+        projections = build_projections(
+            mu=portfolio_expected_return,
+            sigma=portfolio_volatility,
+            years=5
+        )
 
         # -----------------------------
         # Build summary
         # -----------------------------
-        equity_pct = alloc_hint["equity_pct"] / 100
-        bond_pct = alloc_hint["bond_pct"] / 100
-        typical_alloc_text = f"{round(equity_pct*100)}% Equity / {round(bond_pct*100)}% Fixed Income"
-        tv = float(etf_portfolio.get("target_volatility", 0))
-        target_vol_text = f"{tv*100:.1f}%" if tv else "N/A"
 
-        projections = build_projections(
-            mu=float(etf_portfolio.get("target_return", 0)),
-            sigma=float(etf_portfolio.get("target_volatility", 0)),
-            years=5
-        )
-
+        
         summary = {
-            "score": score["score"],
-            "risk_profile": risk_profile,
-            "risk_bucket": risk_bucket,
-            "allocation": etf_portfolio.get("allocation", allocation),
-            "shortlisted_etfs": shortlisted,
-            "target_volatility_text": target_vol_text,
-            "typical_allocation_text": typical_alloc_text,
-            "projections": projections
+            "score": total_score,
+            "risk_profile": profile_data['risk_profile'],
+            "risk_bucket": profile_data['risk_bucket'],
+            "allocation": allocation,
+            "shortlisted_etfs": df_filtered['ETF_Name'].tolist(),
+            "target_volatility_text": f"{portfolio_volatility*100:.1f}%",
+            "typical_allocation_text": f"{round(equity_target*100)}% Equity / {round(bond_target*100)}% Fixed Income",
+            "projections": projections,
+            "portfolio_expected_return": portfolio_expected_return,
+            "portfolio_volatility": portfolio_volatility
         }
 
-        LATEST_ASSESSMENTS["latest"] = {"score": score, **profile_data, "summary": summary}
+        # -----------------------------
+        # Store latest assessment
+        # -----------------------------
+                # -----------------------------
+        # Store latest assessment (auto-updates chatbot)
+        # -----------------------------
+        LATEST_ASSESSMENTS["latest"] = {
+            "score": total_score,
+            **score_data,
+            **profile_data,
+            "summary": summary,
+            "etf_portfolio": etf_portfolio
+        }
 
         return {"status": "success", "summary": summary, "etf_portfolio": etf_portfolio}
 
@@ -300,59 +479,82 @@ def chat(input: ChatIn, request: Request):
     Context-aware educational chatbot:
     - Uses the latest assessment to personalise replies.
     - Provides risk score, risk bucket, portfolio allocations, and projections.
+    - Explains per-field contribution to the total score.
     """
     msg = input.message.lower().strip()
     assess = LATEST_ASSESSMENTS.get("latest")
 
-    # helper to safely access fields
+    # Safe accessor
     def safe_field(obj, key, default=None):
         return obj.get(key, default) if obj else default
 
     if assess:
-        user_risk_profile = safe_field(assess, "risk_profile", "Balanced")
-        user_risk_bucket = safe_field(assess, "risk_bucket", 5)
+        profile_data = assess
         summary = safe_field(assess, "summary", {})
         etf_portfolio = safe_field(assess, "etf_portfolio", {})
-        typical_alloc_text = safe_field(summary, "typical_allocation_text", None)
-        projections = safe_field(summary, "projections", None)
+        user_risk_profile = safe_field(profile_data, "risk_profile", "Balanced")
+        user_risk_bucket = safe_field(profile_data, "risk_bucket", 5)
+        typical_alloc_text = safe_field(summary, "typical_allocation_text", "50% Equity / 50% Fixed Income")
         allocation = safe_field(etf_portfolio, "allocation", {})
-
+        projections = safe_field(summary, "projections", None)
+        # Scores per field
+        field_scores = {k: safe_field(profile_data, k) for k in profile_data if "_score" in k}
     else:
+        profile_data = {}
+        summary = {}
+        etf_portfolio = {}
         user_risk_profile = None
         user_risk_bucket = None
         typical_alloc_text = None
-        projections = None
         allocation = {}
+        projections = None
+        field_scores = {}
 
     # ---------- Risk Score & Profile ----------
     if any(k in msg for k in ["risk", "score", "category"]):
-        if assess:
+        if profile_data:
             return {
                 "reply": (
-                    f"Your risk score is **{user_risk_profile}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
-                    f"Recommended portfolio targets roughly: **{typical_alloc_text or 'N/A'}**.\n\n"
+                    f"Your risk profile is **{user_risk_profile}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
+                    f"Recommended portfolio targets roughly: **{typical_alloc_text}**.\n\n"
                     "Risk categories:\n"
                     "- **Conservative (low):** mostly bonds, capital preservation.\n"
                     "- **Balanced (medium):** mix of equities & bonds.\n"
                     "- **Growth/Aggressive (high):** equity-heavy for higher long-term returns.\n\n"
-                    "The score comes from your questionnaire (time horizon, emergency fund, income stability, experience, reaction to losses)."
+                    "The score is calculated from your questionnaire (time horizon, emergency fund, income stability, experience, reaction to losses)."
                 )
             }
         else:
             return {"reply": "I don't have an assessment for you yet — please complete the questionnaire."}
 
+    # ---------- Explain Score per Field ----------
+    if any(k in msg for k in ["explain", "breakdown", "details"]) and ("score" in msg or "risk" in msg):
+        if field_scores:
+            explanation_lines = []
+            for field, score in field_scores.items():
+                # convert field names like 'age_range_score' -> 'Age Range'
+                pretty_field = field.replace("_score", "").replace("_", " ").title()
+                explanation_lines.append(f"- **{pretty_field}** → {score} points")
+            total_score = safe_field(profile_data, "score", sum(field_scores.values()))
+            reply_text = (
+                f"Here’s how each field contributed to your total risk score ({total_score}):\n" +
+                "\n".join(explanation_lines)
+            )
+            return {"reply": reply_text}
+        else:
+            return {"reply": "No detailed score breakdown is available yet — complete the assessment first."}
+
     # ---------- Portfolio Allocation ----------
     if any(k in msg for k in ["portfolio", "allocation", "portfolio mix"]):
-        if assess:
+        if allocation:
             top_holdings = sorted(allocation.items(), key=lambda x: -float(x[1]))[:6]
             top_text_parts = [
                 f"**{etf_name}**: {round(weight*100,1)}%" for etf_name, weight in top_holdings
             ]
             top_text = ", ".join(top_text_parts) if top_text_parts else "N/A"
-
             return {
                 "reply": (
-                    f"Your recommended portfolio (summary): {typical_alloc_text or 'N/A'}.\n"
+                    f"Your recommended portfolio (summary): {typical_alloc_text}.\n"
                     f"Top holdings: {top_text}.\n\n"
                     "We select ETFs to diversify across regions and asset classes, weighted to match your risk bucket."
                 )
@@ -360,13 +562,33 @@ def chat(input: ChatIn, request: Request):
         else:
             return {"reply": "Complete the assessment first — then I can show the portfolio allocation."}
 
+    # # ---------- How Score is Calculated ----------
+    # if any(k in msg for k in ["how", "calculate", "determine"]) and ("score" in msg or "risk" in msg):
+    #     return {
+    #         "reply": (
+    #             "We compute your risk score using rule-based points from your questionnaire: "
+    #             "time horizon, emergency fund, income stability, investment experience, and reaction to losses. "
+    #             "Each field contributes 1–3 points that map to a risk bucket, which then determines portfolio allocation."
+    #         )
+    #     }
+    
     # ---------- How Score is Calculated ----------
-    if any(k in msg for k in ["how", "calculate", "determine"]) and ("score" in msg or "risk" in msg):
+    if any(k in msg for k in ["detail", "determine"]) and ("score" in msg or "risk" in msg):
+        regional_focus = safe_field(profile_data, "regional_focus", "Global")
+        esg_pref = safe_field(profile_data, "esg_preference", "No preference")
         return {
             "reply": (
-                "We compute your risk score using rule-based points from your questionnaire: "
-                "time horizon, emergency fund, income stability, investment experience, and reaction to losses. "
-                "These map to a numeric score and a risk bucket, which determines portfolio allocation."
+                "We compute your risk score using rule-based points from your questionnaire. "
+                "Each field contributes as follows:\n\n"
+                "- **Time horizon / Investment horizon:** longer horizons allow higher risk.\n"
+                "- **Emergency fund / Income stability / Liabilities:** stronger financial capacity allows higher risk.\n"
+                "- **Investment experience / Risk preference / Reaction to losses:** higher experience or comfort with losses increases the score.\n"
+                "- **Monthly savings / Initial investment:** higher amounts allow more risk.\n"
+                "- **Tech usage / Trust in AI:** can indicate comfort with modern investment tools.\n"
+                "- **Regional Focus:** your selection (currently **{regional_focus}**) determines which ETFs are included in your portfolio, "
+                "affecting diversification but not the numeric risk score directly.\n"
+                "- **ESG Preference:** selecting sustainable ETFs filters the universe accordingly.\n\n"
+                "All these factors combine to produce a numeric risk score, mapped to a risk bucket, which then informs portfolio allocation."
             )
         }
 
@@ -393,11 +615,11 @@ def chat(input: ChatIn, request: Request):
         }
 
     # ---------- Fallback / Personalized ----------
-    if assess:
+    if profile_data:
         return {
             "reply": (
-                f"I have your latest assessment: risk score **{user_risk_profile}**, bucket **{user_risk_bucket}**, "
-                f"recommended split **{typical_alloc_text or 'N/A'}**. "
+                f"I have your latest assessment: risk profile **{user_risk_profile}**, bucket **{user_risk_bucket}**, "
+                f"recommended split **{typical_alloc_text}**. "
                 "Ask me: 'Explain my score', 'Show portfolio', or 'Projection'."
             )
         }

@@ -670,85 +670,106 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
   }
 };
 
-// Chatbot setup
-const chatInput = document.getElementById("chatInput");
-const chatSend = document.getElementById("chatSend");
-const chatLog = document.getElementById("chatLog");
+// -----------------------------
+// Elements
+// -----------------------------
+window.addEventListener('DOMContentLoaded', () => {
+  const chatInput = document.getElementById("chatInput");
+  const chatSend = document.getElementById("chatSend");
+  const chatLog = document.getElementById("chatLog");
 
-// Helper: send message to chat API
-async function sendChat(message) {
-  if (!message) return;
-
-  // User message
-  const userMsg = document.createElement("div");
-  userMsg.className = "text-right bg-indigo-100 text-indigo-900 p-3 rounded-xl max-w-[80%] ml-auto font-sans text-sm shadow-sm";
-  userMsg.innerText = message;
-  chatLog.appendChild(userMsg);
-  chatLog.scrollTop = chatLog.scrollHeight;
-  
-  // Show a loading indicator
-  const loadingMsg = document.createElement("div");
-  loadingMsg.id = 'loadingIndicator';
-  loadingMsg.className = "text-left bg-gray-200 text-gray-700 p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-sm animate-pulse";
-  loadingMsg.innerText = "MoneyMentorX is typing...";
-  chatLog.appendChild(loadingMsg);
-  chatLog.scrollTop = chatLog.scrollHeight;
-
-  try {
-    // Call your backend endpoint that proxies the LLM API
-    const res = await fetch(API + "/chat", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message})
-    });
-    
-    // Remove loading indicator
-    document.getElementById('loadingIndicator')?.remove();
-
-    if (!res.ok) {
-        const errorBody = await parseResponseBody(res);
-        const errorMsg = `Chat API failed: ${res.status} ${res.statusText} - ${JSON.stringify(errorBody)}`;
-        console.error(errorMsg);
-        
-        const errorBotMsg = document.createElement("div");
-        errorBotMsg.className = "text-left bg-red-500 text-white p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-md";
-        errorBotMsg.innerHTML = "Sorry, the chat service encountered an error.";
-        chatLog.appendChild(errorBotMsg);
-        chatLog.scrollTop = chatLog.scrollHeight;
-        return;
-    }
-
-    const data = await res.json();
-
-    // Bot message
-    const botMsg = document.createElement("div");
-    botMsg.className = "text-left bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-md";
-    botMsg.innerHTML = data.reply.replace(/\n/g, '<br>'); // Handle newlines
-    chatLog.appendChild(botMsg);
-    chatLog.scrollTop = chatLog.scrollHeight;
-  } catch (err) {
-      console.error('Chat function error:', err);
-      document.getElementById('loadingIndicator')?.remove();
-      const errorBotMsg = document.createElement("div");
-      errorBotMsg.className = "text-left bg-red-500 text-white p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-md";
-      errorBotMsg.innerHTML = "A network error occurred while trying to chat.";
-      chatLog.appendChild(errorBotMsg);
-      chatLog.scrollTop = chatLog.scrollHeight;
+  if (!chatInput || !chatSend || !chatLog) {
+    console.warn("Chatbot elements not found. Initialization skipped.");
+    return;
   }
-}
 
-// Event listeners for chat
-chatSend.onclick = () => {
-  sendChat(chatInput.value);
-  chatInput.value = '';
-};
+  // Helper: send message to chat API
+  async function sendChat(message) {
+    if (!message) return;
 
-chatInput.onkeydown = (e) => {
-  if (e.key === 'Enter') {
+    // Display user message
+    const userMsg = document.createElement("div");
+    userMsg.className = "text-right bg-indigo-100 text-indigo-900 p-3 rounded-xl max-w-[80%] ml-auto font-sans text-sm shadow-sm";
+    userMsg.innerText = message;
+    chatLog.appendChild(userMsg);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    // Loading indicator
+    const loadingMsg = document.createElement("div");
+    loadingMsg.id = 'loadingIndicator';
+    loadingMsg.className = "text-left bg-gray-200 text-gray-700 p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-sm animate-pulse";
+    loadingMsg.innerText = "MoneyMentorX is typing...";
+    chatLog.appendChild(loadingMsg);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    try {
+      const res = await fetch(API + "/chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({message})
+      });
+
+      document.getElementById('loadingIndicator')?.remove();
+
+      if (!res.ok) {
+        console.error("Chat API error", res.status, res.statusText);
+        return;
+      }
+
+      const data = await res.json();
+
+      // Display bot message
+      const botMsg = document.createElement("div");
+      botMsg.className = "text-left bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-md";
+      botMsg.innerHTML = data.reply.replace(/\n/g, '<br>');
+      chatLog.appendChild(botMsg);
+      chatLog.scrollTop = chatLog.scrollHeight;
+
+    } catch (err) {
+      console.error("Chat error:", err);
+      document.getElementById('loadingIndicator')?.remove();
+    }
+  }
+
+  // Send on button click
+  chatSend.onclick = () => {
     sendChat(chatInput.value);
     chatInput.value = '';
-  }
-};
+  };
+
+  // Send on Enter key
+  chatInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      sendChat(chatInput.value);
+      chatInput.value = '';
+    }
+  };
+
+  // Automatically show latest assessment on load
+  (async () => {
+    try {
+      const res = await fetch(API + "/chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({message: "show my latest assessment"})
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const botMsg = document.createElement("div");
+        botMsg.className = "text-left bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 rounded-xl max-w-[80%] font-sans text-sm shadow-md";
+        botMsg.innerHTML = data.reply.replace(/\n/g, '<br>');
+        chatLog.appendChild(botMsg);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+    } catch (err) {
+      console.error("Error fetching latest assessment:", err);
+    }
+  })();
+
+});
+
+
+
 </script>
 </body>
 </html>
