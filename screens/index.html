@@ -399,59 +399,93 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
     const assess = await res.json();
     console.log("DEBUG: assess response:", assess);
 
-    // Render a small 5-year projections chart with easy-to-understand labels
-  function renderProjectionsChart(summary) {
-    try {
-      const proj = summary && summary.projections;
-      if (!proj || !proj.years) return;
+    // Render a merged 5-year projections chart with savings growth as %
+    function renderCombinedProjectionChart(summary, annualIncome) {
+      try {
+        const proj = summary && summary.projections;
+        if (!proj || !proj.years) return;
 
-      // Set chart heading
-      const headingDiv = document.getElementById('projectionHeading');
-      if (headingDiv) headingDiv.innerText = "📈 5-Year Investment Projections";
+        // Set chart heading
+        const headingDiv = document.getElementById('projectionHeading');
+        if (headingDiv) headingDiv.innerText = "📈 5-Year Investment Projections vs. Savings Growth";
 
-      const ctx = document.getElementById('projectionChart');
-      if (!ctx) return;
+        const ctx = document.getElementById('projectionChart');
+        if (!ctx) return;
 
-      const years = proj.years.map(y => `Year ${y}`);
-      const median = proj.median.map(x => (Number(x) - 1) * 100);
-      const p10 = proj.p10.map(x => (Number(x) - 1) * 100);
-      const p90 = proj.p90.map(x => (Number(x) - 1) * 100);
+        const years = proj.years.map(y => `Year ${y}`);
+        const median = proj.median.map(x => (Number(x) - 1) * 100);
+        const p10 = proj.p10.map(x => (Number(x) - 1) * 100);
+        const p90 = proj.p90.map(x => (Number(x) - 1) * 100);
 
-      // Destroy existing chart instance if present
-      if (ctx._chartInstance) {
-        try { ctx._chartInstance.destroy(); } catch(e){}
-      }
-
-      ctx._chartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: years,
-          datasets: [
-            { label: 'Most Likely Outcome', data: median, borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,0.08)', fill: false },
-            { label: 'Lower Range (Conservative)', data: p10, borderColor: '#DC2626', borderDash: [6,4], fill: false, pointStyle: 'dash' },
-            { label: 'Upper Range (Optimistic)', data: p90, borderColor: '#16A34A', borderDash: [6,4], fill: false, pointStyle: 'dash' }
-          ]
-        },
-        options: { 
-          responsive: true, 
-          plugins: { 
-            legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'rect' } } 
-          }, 
-          scales: { 
-            y: { 
-              ticks: { callback: v => v.toFixed(1) + '%' },
-              title: { display: true, text: 'Projected Growth (%)' }
-            },
-            x: {
-              title: { display: true, text: 'Years' }
-            }
-          } 
+        // --- Savings Growth as % over cash savings ---
+        // Determine selected savings rate from the form
+        const savingsSelection = document.getElementById('monthly_savings').value;
+        let savingsRate = 0.02;
+        let labelRate = '2%';
+        if (savingsSelection.includes('5–15')) {
+          savingsRate = 0.10;
+          labelRate = '10%';
+        } else if (savingsSelection.includes('> 15') || savingsSelection.includes('>15')) {
+          savingsRate = 0.20;
+          labelRate = '20%';
         }
-      });
-    } catch (e) {
-      console.error('Projection chart error', e);
+
+        // Use portfolio expected return for compounding
+        const targetReturn = summary.portfolio_expected_return || 0.06;
+        const monthlyReturn = Math.pow(1 + targetReturn, 1/12) - 1;
+        const months = 5 * 12;
+        let investedBalance = 0;
+        let cashBalance = 0;
+        const investedBalances = [];
+        const cashBalances = [];
+        const monthlySaving = (annualIncome * savingsRate) / 12;
+        for (let i = 0; i < months; i++) {
+          investedBalance = investedBalance * (1 + monthlyReturn) + monthlySaving;
+          cashBalance += monthlySaving;
+          if ((i + 1) % 12 === 0) {
+            investedBalances.push(investedBalance);
+            cashBalances.push(cashBalance);
+          }
+        }
+        // Calculate % increase over cash savings for each year
+        const savingsGrowthPct = investedBalances.map((bal, i) => ((bal - cashBalances[i]) / cashBalances[i]) * 100);
+
+        // Destroy existing chart instance if present
+        if (ctx._chartInstance) {
+          try { ctx._chartInstance.destroy(); } catch(e){}
+        }
+
+        ctx._chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: years,
+            datasets: [
+              { label: 'Most Likely Outcome', data: median, borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,0.08)', fill: false },
+              { label: 'Lower Range (Conservative)', data: p10, borderColor: '#DC2626', borderDash: [6,4], fill: false, pointStyle: 'dash' },
+              { label: 'Upper Range (Optimistic)', data: p90, borderColor: '#16A34A', borderDash: [6,4], fill: false, pointStyle: 'dash' },
+              { label: `5-Year Savings Returns (from ${labelRate} of income)`, data: savingsGrowthPct, borderColor: '#10B981', fill: false, tension: 0.25, pointRadius: 3 }
+            ]
+          },
+          options: { 
+            responsive: true, 
+            plugins: { 
+              legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'rect' } } 
+            }, 
+            scales: { 
+              y: { 
+                ticks: { callback: v => v.toFixed(1) + '%' },
+                title: { display: true, text: 'Projected Growth (%)' }
+              },
+              x: {
+                title: { display: true, text: 'Years' }
+              }
+            } 
+          }
+        });
+      } catch (e) {
+        console.error('Combined projection chart error', e);
+      }
     }
-  }
 
     // Render assessment summary once
     const renderAssessSummary = (assessObj) => {
@@ -544,23 +578,15 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
       }
     }
 
-    renderAssessSummary(Object.assign({}, assess, { summary: summaryToUse }));
-    // Render projections chart if available (This is the first line graph, in resultText)
-    renderProjectionsChart(summaryToUse);
+  renderAssessSummary(Object.assign({}, assess, { summary: summaryToUse }));
+  // Render merged projections + savings chart
+  const annualIncome = Number(getVal("annual_income")) || 0;
+  renderCombinedProjectionChart(summaryToUse, annualIncome);
 
     // Display ETF charts
     etfChartsDiv.innerHTML = "";
     
-    // --- START OF MODIFICATION: APPEND SAVINGS GROWTH CARD FIRST IN ETF CHARTS DIV ---
-    const savingsCard = document.createElement('div');
-    savingsCard.className = 'bg-white p-4 rounded-xl shadow mb-4 border border-gray-100';
-    savingsCard.innerHTML = `
-      <h3 class="text-lg font-semibold text-blue-600 mb-2">💸 Savings Growth Projection</h3>
-      <canvas id="savingsGrowthChart" height="160"></canvas>
-      <p class="text-sm text-gray-500 mt-2">Projected growth over 10 years for different monthly savings rates.</p>
-    `;
-    etfChartsDiv.appendChild(savingsCard);
-    // --- END OF MODIFICATION ---
+    // --- REMOVED: Savings Growth Card (now merged in main chart) ---
 
     if (etfData.etfs) {
       // Individual ETF mode (will follow the savings card)
@@ -633,7 +659,7 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
       etfChartsDiv.appendChild(summaryCard);
   // If the backend provided projections on the portfolio, render them
   const portfolioSummary = portfolio.summary || summaryToUse || null;
-  if (portfolioSummary) renderProjectionsChart(portfolioSummary);
+  // if (portfolioSummary) renderProjectionsChart(portfolioSummary); // REMOVED: merged chart handles projections
 
       // Allocation table
       const alloc = portfolio.allocation || {};
@@ -701,68 +727,9 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
 
     // --- REMOVED: Original Savings Growth card append block was here ---
 
-    // --- Render function ---
-    function renderSavingsGrowthChart(portfolio, annualIncome) {
-      if (!annualIncome || annualIncome <= 0 || !portfolio) return;
+    // --- REMOVED: renderSavingsGrowthChart (now merged in main chart) ---
 
-      const ctx = document.getElementById('savingsGrowthChart').getContext('2d');
-      const targetReturn = portfolio.target_return || 0.06; // annual decimal
-      const monthlyReturn = Math.pow(1 + targetReturn, 1/12) - 1;
-
-      const savingsRates = [0.05, 0.10, 0.15, 0.25];
-      const months = 10 * 12;
-
-      const datasets = savingsRates.map(rate => {
-        let balance = 0;
-        const balances = [];
-        const monthlySaving = (annualIncome * rate) / 12;
-
-        for (let i = 0; i < months; i++) {
-          balance = balance * (1 + monthlyReturn) + monthlySaving;
-          if ((i + 1) % 12 === 0) balances.push(Math.round(balance));
-        }
-
-        const colorMap = {0.05: '#2563EB', 0.10: '#10B981', 0.15: '#F59E0B', 0.25: '#EF4444'};
-        return { 
-          label: `${rate*100}% Savings`, 
-          data: balances, 
-          borderColor: colorMap[rate], 
-          fill: false, 
-          tension: 0.25, 
-          pointRadius: 3 
-        };
-      });
-
-      const years = Array.from({ length: 10 }, (_, i) => `Year ${i+1}`);
-
-      if (ctx._chartInstance) ctx._chartInstance.destroy();
-
-      ctx._chartInstance = new Chart(ctx, {
-        type: 'line',
-        data: { labels: years, datasets },
-        options: {
-          responsive: true,
-          interaction: { mode: 'nearest', intersect: false },
-          plugins: {
-            legend: { position: 'bottom' },
-            tooltip: {
-              callbacks: {
-                label: ctx => `${ctx.dataset.label}: €${ctx.parsed.y.toLocaleString()}`
-              }
-            }
-          },
-          scales: {
-            y: { title: { display: true, text: 'Portfolio Value (EUR)' } },
-            x: { title: { display: true, text: 'Years' } }
-          }
-        }
-      });
-    }
-
-    // --- Call render function with current portfolio & income ---
-    const portfolio = etfData || summaryToUse; // pick whatever portfolio object is available
-    const annualIncome = Number(getVal("annual_income")) || 0;
-    renderSavingsGrowthChart(portfolio, annualIncome);
+  // --- REMOVED: call to renderSavingsGrowthChart (now merged in main chart) ---
 
     // --- FIX: Automatically send the assessment data to the chat for AI explanation ---
     // Note: The 'explainProfileAutomatically' function is missing from the provided JS, 
@@ -779,167 +746,44 @@ document.getElementById("questionnaire").onsubmit = async function(e) {
 // -----------------------------
 document.getElementById('downloadReport').addEventListener('click', async () => {
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF('p', 'pt', 'a4'); // portrait
+  const pdf = new jsPDF('p', 'pt', 'a4');
   const pdfWidth = pdf.internal.pageSize.getWidth();
   const pdfHeight = pdf.internal.pageSize.getHeight();
   const margin = 20;
   let cursorY = margin;
 
-  // 1. MODIFIED helper to add text blocks (Title is CENTERED)
-  function addTextBlock(title, text) {
+  // Helper to add a section to the PDF from a DOM element
+  async function addSectionFromElement(title, element) {
     pdf.setFontSize(14);
     pdf.setTextColor(37, 99, 235);
-    
-    // --- Center the Title ---
     const titleWidth = pdf.getStringUnitWidth(title) * pdf.internal.getFontSize() / pdf.internal.scaleFactor;
     const centerTitleX = (pdfWidth / 2) - (titleWidth / 2);
     pdf.text(title, centerTitleX, cursorY);
-    // ------------------------
-    
     cursorY += 20;
 
-    // Body text remains LEFT-ALIGNED at the margin
-    pdf.setFontSize(11);
-    pdf.setTextColor(0, 0, 0);
-    const lines = pdf.splitTextToSize(text, pdfWidth - 2 * margin);
-    pdf.text(lines, margin, cursorY); 
-    cursorY += lines.length * 14 + 10;
-
-    // Check if need a new page
-    if (cursorY > pdfHeight - margin) {
-      pdf.addPage();
-      cursorY = margin;
-    }
-  }
-
-  // --- 2. PRINT ALL TEXT CONTENT FIRST (excluding the chart from resultText) ---
-  
-  const summaryDiv = document.getElementById('resultText');
-  const etfChartsDiv = document.getElementById('etfCharts');
-
-  // Temporarily clone summaryDiv and remove the #projectionChart to prevent duplication
-  let summaryClone = summaryDiv.cloneNode(true);
-  const chartToRemove = summaryClone.querySelector('#projectionChart');
-  if (chartToRemove) {
-      // Remove the entire parent div of the chart if possible, to remove the blank space
-      const projectionSection = chartToRemove.closest('.bg-gray-50');
-      if (projectionSection) {
-          projectionSection.remove();
-      }
-  }
-
-  // A. Collect Investment Summary text (from modified summaryClone)
-  // Ensure html2canvas is loaded globally for this to work
-  if (window.html2canvas) { 
-    await html2canvas(summaryClone, { scale: 2 }).then(canvas => {
+    if (window.html2canvas && element) {
+      await html2canvas(element, { scale: 2 }).then(canvas => {
         const imgData = canvas.toDataURL('image/png');
         const imgWidth = pdfWidth - 2 * margin;
         const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-        if (imgHeight > 10) { // Only add if content exists
-          if (cursorY + imgHeight > pdfHeight - margin) {
-            pdf.addPage();
-            cursorY = margin;
-          }
-          addTextBlock("Investment Summary", ""); // Title for the summary text block
-          cursorY -= 10; // Back up slightly for the image
-          pdf.addImage(imgData, 'PNG', margin, cursorY, imgWidth, imgHeight);
-          cursorY += imgHeight + 20;
+        if (cursorY + imgHeight > pdfHeight - margin) {
+          pdf.addPage();
+          cursorY = margin;
         }
-    });
-  } else {
-    addTextBlock("Investment Summary", summaryDiv.innerText || "No summary available. html2canvas not loaded for formatted summary.");
-  }
-
-
-  // B. Collect Portfolio/Allocation TEXT (from etfChartsDiv plain HTML)
-  let etfClone = etfChartsDiv.cloneNode(true);
-  // Remove all chart wrappers from the clone
-  etfClone.querySelectorAll('div canvas').forEach(c => c.closest('div.bg-white')?.remove()); 
-  
-  // Re-select text elements from the cleaned clone
-  const textElements = etfClone.children;
-
-  if (textElements.length > 0) {
-      addTextBlock("Portfolio Details", ""); 
-      cursorY -= 10; 
-
-      if (window.html2canvas) {
-        await html2canvas(etfClone, { scale: 2 }).then(canvas => {
-            const imgData = canvas.toDataURL('image/png');
-            const imgWidth = pdfWidth - 2 * margin;
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-            
-            if (cursorY + imgHeight > pdfHeight - margin) {
-                pdf.addPage();
-                cursorY = margin;
-            }
-            pdf.addImage(imgData, 'PNG', margin, cursorY, imgWidth, imgHeight);
-            cursorY += imgHeight + 20;
-        });
-      } else {
-        addTextBlock("Portfolio Details", etfChartsDiv.innerText);
-      }
-  }
-
-
-  // --- 3. PRINT ALL CHART CANVAS ELEMENTS TOGETHER IN THE NEW ORDER ---
-
-  addTextBlock("Investment Charts", "Visual projections and detailed history.");
-  
-  // Define the desired order of charts by their IDs/selectors
-  const chartSelectorsInOrder = [
-    // 1. 5-Year Investment Projections (Line Graph 1)
-    '#resultText #projectionChart',     
-    // 2. Savings Growth Projection (Line Graph 2)
-    '#etfCharts #savingsGrowthChart',   
-    // 3. ETF/Allocation Doughnut Chart
-    '#etfCharts canvas[width="200"]', 
-    // 4. Individual ETF History Charts
-    '#etfCharts canvas:not([width="200"]):not(#savingsGrowthChart)' 
-  ];
-
-  for (const selector of chartSelectorsInOrder) {
-    const charts = document.querySelectorAll(selector);
-    
-    // Iterate over found charts
-    for (const chart of charts) {
-      // Ensure the chart has rendered and has content
-      if (chart.width === 0 || chart.height === 0 || !chart._chartInstance) continue; 
-      
-      // Get the title to print above the chart image
-      let chartTitle;
-      if (chart.id === 'projectionChart') {
-          chartTitle = "5-Year Investment Projections";
-      } else if (chart.id === 'savingsGrowthChart') {
-          chartTitle = "Savings Growth Projection";
-      } else if (chart.width === 200) {
-          chartTitle = "Portfolio Allocation";
-      } else {
-          // Individual ETF History
-          chartTitle = chart.parentNode.querySelector('h5')?.innerText + " Price History" || "ETF History";
-      }
-
-      // Draw Title
-      pdf.setFontSize(12);
-      pdf.setTextColor(37, 99, 235);
-      pdf.text(chartTitle, margin, cursorY);
-      cursorY += 15;
-
-      // Draw Chart Image
-      const imgData = chart.toDataURL('image/png');
-      const chartWidth = pdfWidth - 2 * margin;
-      const chartHeight = (chart.height * chartWidth) / chart.width;
-
-      if (cursorY + chartHeight > pdfHeight - margin) {
-        pdf.addPage();
-        cursorY = margin;
-      }
-
-      pdf.addImage(imgData, 'PNG', margin, cursorY, chartWidth, chartHeight);
-      cursorY += chartHeight + 20; // space after chart
+        pdf.addImage(imgData, 'PNG', margin, cursorY, imgWidth, imgHeight);
+        cursorY += imgHeight + 20;
+      });
+    } else {
+      pdf.setFontSize(11);
+      pdf.setTextColor(0, 0, 0);
+      pdf.text(element ? element.innerText : '', margin, cursorY);
+      cursorY += 40;
     }
   }
+
+  // Add summary and chart sections directly from visible DOM
+  await addSectionFromElement('Investment Summary', document.getElementById('resultText'));
+  await addSectionFromElement('Portfolio Details', document.getElementById('etfCharts'));
 
   pdf.save('investment_report.pdf');
 });

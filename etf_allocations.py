@@ -29,17 +29,20 @@ def clean_ticker(raw_ticker: str) -> Optional[str]:
 def load_etf_data(path: str = "etf_data.csv"):
     """
     Load ETF data from CSV into global ETF_DATA dictionary.
-    Cleans tickers for yfinance.
+    Cleans tickers for yfinance and maintains both DataFrame and dictionary representations.
     """
     global ETF_DATA
     try:
+        # Load and clean DataFrame
         df = pd.read_csv(path)
+        
         # Ensure correct types
         if 'Expense_Ratio' in df.columns:
             df['Expense_Ratio'] = df['Expense_Ratio'].astype(float)
         if 'Risk_Level' in df.columns:
             df['Risk_Level'] = df['Risk_Level'].astype(int)
-        
+            
+        # Process DataFrame into categorized dictionary
         ETF_DATA.clear()
         for _, row in df.iterrows():
             cat = row['Category']
@@ -50,23 +53,30 @@ def load_etf_data(path: str = "etf_data.csv"):
                 if len(parts) > 1:
                     isin = parts[1].strip() or None
             
-            ETF_DATA.setdefault(cat, []).append({
+            etf_entry = {
                 "risk_level": row["Risk_Level"],
                 "ETF_Name": row["ETF_Name"],
                 "region": row["Region"],
                 "asset_type": row["Asset_Type"],
                 "description": row["Description"],
-                "Ticker": ticker,  # Cleaned for yfinance
+                "Ticker": ticker,
                 "ISIN": isin,
                 "expense_ratio": row["Expense_Ratio"],
                 "typical_use": row["Typical_Use"],
                 "sustainability": row.get("Sustainability", "no")
-            })
+            }
+            
+            ETF_DATA.setdefault(cat, []).append(etf_entry)
+            
         print(f"✅ Loaded {len(df)} ETFs across {len(ETF_DATA)} categories.")
+        return df  # Return DataFrame for any code that needs it
+        
     except FileNotFoundError:
         print(f"Error: ETF data file not found at {path}. ETF_DATA is empty.")
+        return pd.DataFrame()
     except Exception as e:
         print(f"Error loading ETF data: {e}")
+        return pd.DataFrame()
 
 # -----------------------------
 # Refresh ETF universe
@@ -247,40 +257,69 @@ def determine_risk_profile(data: dict, historical_returns: np.ndarray, weights: 
     }
 
 
-def get_etf_candidates(region_pref: str, sustainable_pref: str):
+def get_filtered_etfs(preferences: dict) -> List[Dict[str, Any]]:
     """
-    Filter ETFs based on region and sustainability preference.
-    Returns a list of all matching ETF dictionaries.
+    Advanced ETF filtering function that combines the functionality of get_etf_candidates
+    and get_dynamic_etfs. Filters ETFs based on multiple criteria.
+    
+    Args:
+        preferences: dict containing filter criteria:
+            - region_pref: str ("global", "eu", "us", etc.)
+            - sustainable_pref: str ("yes", "no")
+            - sectors_to_avoid: List[str] (optional)
+            - asset_type: str (optional)
+            - max_expense_ratio: float (optional)
+            - risk_level: int (optional)
+    
+    Returns:
+        List of ETF dictionaries matching the criteria
     """
-    region_pref = region_pref.lower()
-    sustainable_pref = sustainable_pref.lower()
+    # Start with all ETFs
+    all_etfs = [etf for cat in ETF_DATA.values() for etf in cat]
+    filtered_etfs = []
     
-    # Determine target category names based on preferences
-    target_categories = []
-    if sustainable_pref == "yes":
-        if "eu" in region_pref:
-            target_categories.append("European Sustainable")
-        elif "us" in region_pref:
-            target_categories.append("US Sustainable")
-        else: # Global/No specific region
-            target_categories.extend(["European Sustainable", "US Sustainable", "Global Sustainable"])
-    elif sustainable_pref == "no":
-        if "eu" in region_pref:
-            target_categories.append("European")
-        elif "us" in region_pref:
-            target_categories.append("US")
-        else: # Global/No specific region
-            target_categories.extend(["European", "US", "Global"])
-    else:
-        # No preference → combine all categories
-        return [etf for cat in ETF_DATA.values() for etf in cat]
-
-    # Collect ETFs from determined categories
-    etfs = []
-    for cat in target_categories:
-        etfs.extend(ETF_DATA.get(cat, []))
+    # Normalize region preference
+    region_pref = preferences.get("region_pref", "global").lower().strip()
+    region_mapping = {
+        "europe (eu)": "europe",
+        "u.s. (us)": "us",
+        "no preference": "global"
+    }
+    region_pref = region_mapping.get(region_pref, region_pref)
     
-    return etfs
+    # Normalize sustainability preference
+    sustainable_pref = preferences.get("sustainable_pref", "no").lower().strip()
+    
+    # Get excluded sectors
+    sectors_to_avoid = [s.lower().strip() for s in preferences.get("sectors_to_avoid", [])]
+    
+    # Filter ETFs
+    for etf in all_etfs:
+        # Skip if region doesn't match (unless global)
+        if region_pref != "global" and not etf["region"].lower().startswith(region_pref):
+            continue
+            
+        # Skip if sustainability preference doesn't match
+        if sustainable_pref == "yes" and etf.get("sustainability", "no").lower() != "yes":
+            continue
+            
+        # Skip if sector should be avoided
+        if any(sector.lower() in etf["asset_type"].lower() for sector in sectors_to_avoid):
+            continue
+            
+        # Optional filters
+        if "asset_type" in preferences and etf["asset_type"].lower() != preferences["asset_type"].lower():
+            continue
+            
+        if "max_expense_ratio" in preferences and etf["expense_ratio"] > preferences["max_expense_ratio"]:
+            continue
+            
+        if "risk_level" in preferences and etf["risk_level"] != preferences["risk_level"]:
+            continue
+            
+        filtered_etfs.append(etf)
+    
+    return filtered_etfs
 
 # -----------------------------
 # Safe yfinance fetch
@@ -317,12 +356,20 @@ def get_live_performance(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
 # -----------------------------
 # Get portfolio by risk bucket
 # -----------------------------
-def get_etf_portfolio(risk_bucket: int, candidate_etfs: Optional[List[Dict[str, Any]]] = None) -> dict:
+def get_etf_portfolio(risk_bucket: int, preferences: Optional[Dict[str, Any]] = None) -> dict:
     """
     Returns equal-weighted ETF portfolio with live performance.
+    
+    Args:
+        risk_bucket: int (1-10) indicating risk level
+        preferences: Optional dict of ETF filter preferences
     """
-    # Determine source ETFs
-    source_list = candidate_etfs if candidate_etfs else [e for cat in ETF_DATA.values() for e in cat]
+    # Get filtered ETFs based on preferences
+    if preferences:
+        preferences["risk_level"] = 1 if risk_bucket <= 3 else (2 if risk_bucket <= 7 else 3)
+        source_list = get_filtered_etfs(preferences)
+    else:
+        source_list = [e for cat in ETF_DATA.values() for e in cat]
     
     # Map 10-bucket risk to 3-level ETF risk
     etfs = []
@@ -375,6 +422,46 @@ def get_etf_portfolio(risk_bucket: int, candidate_etfs: Optional[List[Dict[str, 
         "target_volatility": round(target_v, 4),
         "sharpe_ratio": round((target_r - 0.01) / target_v, 4)
     }
+
+# -----------------------------
+# Historical data functions
+# -----------------------------
+def get_historical_returns(tickers: List[str], period: str = "1y") -> pd.DataFrame:
+    """
+    Fetch and calculate historical returns for given tickers.
+    
+    Args:
+        tickers: List of ticker symbols
+        period: Time period (e.g., "1y", "max", "5y")
+        
+    Returns:
+        DataFrame of daily returns
+    """
+    if not tickers:
+        return pd.DataFrame()
+        
+    # Download all tickers at once
+    try:
+        data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True)
+        
+        if len(tickers) == 1:
+            # single ticker returns a Series
+            data = data.to_frame()
+            data.columns = [tickers[0]]
+            returns = data.pct_change().dropna()
+        else:
+            # multiple tickers: extract 'Adj Close' or adjusted prices directly
+            try:
+                adj_close = pd.DataFrame({t: data[t]['Close'] for t in tickers})
+                returns = adj_close.pct_change().dropna()
+            except Exception as e:
+                print(f"Error processing returns: {e}")
+                returns = pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching historical data: {e}")
+        returns = pd.DataFrame()
+    
+    return returns
 
 # -----------------------------
 # Initial load

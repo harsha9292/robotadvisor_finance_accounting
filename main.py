@@ -6,22 +6,38 @@ import math
 from fastapi.responses import FileResponse
 import json 
 import pandas as pd
+def get_dynamic_etfs(input_dict: dict):
+    """
+    Get filtered ETFs based on user preferences.
+    """
+    preferences = {
+        "region_pref": input_dict.get("regional_focus", "global"),
+        "sustainable_pref": input_dict.get("esg_preference", "no"),
+        "sectors_to_avoid": input_dict.get("sectors_to_avoid", [])
+    }
+    filtered_etfs = get_filtered_etfs(preferences)
+    df = pd.DataFrame.from_records(filtered_etfs)
+    return df
+
 import numpy as np
 import yfinance as yf
 
 # -----------------------------
-# Import modules for ETF logic
+# Import modules
 # -----------------------------
 from etf_allocations import (
     ETF_DATA,
-    get_etf_candidates,
+    get_filtered_etfs,
     get_etf_portfolio,
     refresh_etf_universe,
     calculate_score,
-    determine_risk_profile
+    determine_risk_profile,
+    get_historical_returns
 )
+from api_endpoints import router as etf_router
 
 app = FastAPI(title="RoboAdvisor MVP")
+app.include_router(etf_router, prefix="/api/v1", tags=["ETF Management"])
 
 @app.get("/")
 def root():
@@ -173,46 +189,21 @@ def sanitize_for_json(obj):
         return obj
     else:
         return obj
-# -----------------------------
-# Load ETF list from CSV at startup
-# -----------------------------
-ETF_DF = pd.read_csv("etf_data.csv")
+# ETF data is now managed through ETF_DATA in etf_allocations.py
 
 def get_selected_etfs(input_dict: dict):
     """
     Return ETF tickers filtered by user preferences (region + ESG).
     """
-    region_pref = input_dict.get("regional_focus", "global")
-    esg_pref = input_dict.get("esg_preference", "no").lower()
-    
-    df = ETF_DF.copy()
-    
-    if region_pref.lower() != "global":
-        df = df[df['Region'].str.lower() == region_pref.lower()]
-    if esg_pref == "yes":
-        df = df[df['Sustainability'].str.lower() == 'yes']
-    
-    return df['Ticker_ISIN'].tolist()
+    # Use get_filtered_etfs from etf_allocations
+    preferences = {
+        "region_pref": input_dict.get("regional_focus", "global"),
+        "sustainable_pref": input_dict.get("esg_preference", "no")
+    }
+    filtered_etfs = get_filtered_etfs(preferences)
+    return [etf['Ticker'] for etf in filtered_etfs if etf.get('Ticker')]
 
-def get_historical_returns(tickers, period="1y"):
-    # Download all tickers at once
-    data = yf.download(tickers, period=period, group_by='ticker', auto_adjust=True)
-    
-    if len(tickers) == 1:
-        # single ticker returns a Series
-        data = data.to_frame()
-        data.columns = [tickers[0]]
-        returns = data.pct_change().dropna()
-    else:
-        # multiple tickers: extract 'Adj Close' or adjusted prices directly
-        try:
-            adj_close = pd.DataFrame({t: data[t]['Close'] for t in tickers})
-            returns = adj_close.pct_change().dropna()
-        except Exception as e:
-            print(f"Error fetching historical returns: {e}")
-            returns = pd.DataFrame()
-    
-    return returns
+# Function moved to etf_allocations.py
 
 
 REGION_MAPPING = {
@@ -223,50 +214,30 @@ REGION_MAPPING = {
 }
 
 
-def get_dynamic_etfs(input_dict: dict):
-    df = ETF_DF.copy()
-
-    # Normalize region input
-    region_input = input_dict.get("regional_focus", "Global").strip().lower()
-    region_pref = REGION_MAPPING.get(region_input, "global")
-
-    if region_pref != "global":
-        df['Region_clean'] = df['Region'].str.lower().str.strip()
-        df = df[df['Region_clean'] == region_pref]
-
-    # ESG filter
-    esg_pref = input_dict.get("esg_preference", "no").lower()
-    if esg_pref == "yes":
-        df['Sustainability_clean'] = df['Sustainability'].str.lower().str.strip()
-        df = df[df['Sustainability_clean'] == 'yes']
-
-    # Optional: remove ETFs from sectors_to_avoid
-    sectors_to_avoid = [s.lower().strip() for s in input_dict.get("sectors_to_avoid", [])]
-    if sectors_to_avoid:
-        df['Asset_Type_clean'] = df['Asset_Type'].str.lower().str.strip()
-        df = df[~df['Asset_Type_clean'].isin(sectors_to_avoid)]
-
-    return df
-
 def dynamic_allocation(df: pd.DataFrame, risk_score: float):
+    """Calculate dynamic allocation based on risk score and available ETFs."""
     # Risk score 1–10 → equity %: 20–80, bonds = 100 - equity
     equity_pct = min(max((risk_score / 10) * 80, 20), 80)
     bond_pct = 100 - equity_pct
 
-    # Split equity portion equally among equity ETFs
-    equity_etfs = df[df['Asset_Type'].str.contains("Equity|World|Emerging|US|Europe", case=False)]
-    bond_etfs = df[df['Asset_Type'].str.contains("Bond|Treasury", case=False)]
+    # Use correct column names from filtered DataFrame
+    equity_etfs = df[df['asset_type'].str.contains("Equity|World|Emerging|US|Europe", case=False, na=False)]
+    bond_etfs = df[df['asset_type'].str.contains("Bond|Treasury", case=False, na=False)]
 
     allocation = {}
     if not equity_etfs.empty:
         eq_weight = equity_pct / len(equity_etfs)
-        for t in equity_etfs['Ticker_ISIN']:
-            allocation[t] = round(eq_weight / 100, 4)  # store as fraction
+        for _, row in equity_etfs.iterrows():
+            ticker = row['Ticker']
+            if ticker:
+                allocation[ticker] = round(eq_weight / 100, 4)  # store as fraction
 
     if not bond_etfs.empty:
         bond_weight = bond_pct / len(bond_etfs)
-        for t in bond_etfs['Ticker_ISIN']:
-            allocation[t] = round(bond_weight / 100, 4)
+        for _, row in bond_etfs.iterrows():
+            ticker = row['Ticker']
+            if ticker:
+                allocation[ticker] = round(bond_weight / 100, 4)  # store as fraction
 
     return allocation
 
@@ -339,7 +310,7 @@ async def assess(inputs: RiskInput):
         #print(df_filtered[['ETF_Name', 'Ticker_ISIN', 'Asset_Type']].head(10))
 
 
-        tickers = df_filtered['Ticker_ISIN'].tolist()
+        tickers = df_filtered['Ticker'].tolist()
         returns_df = get_historical_returns(tickers)
 
         if not returns_df.empty:
@@ -363,19 +334,19 @@ async def assess(inputs: RiskInput):
         print(f"\nEquity target: {equity_target*100:.1f}%, Bond target: {bond_target*100:.1f}%")
 
         # Separate ETFs by type
-        equity_etfs = df_filtered[df_filtered['Asset_Type'].str.contains("Equity|World|US|Europe|Emerging", case=False)]
-        bond_etfs = df_filtered[df_filtered['Asset_Type'].str.contains("Bond|Treasury", case=False)]
+        equity_etfs = df_filtered[df_filtered['asset_type'].str.contains("Equity|World|US|Europe|Emerging", case=False)]
+        bond_etfs = df_filtered[df_filtered['asset_type'].str.contains("Bond|Treasury", case=False)]
 
         allocation = {}
 
         if not equity_etfs.empty:
             eq_weight = equity_target / len(equity_etfs)
-            for t in equity_etfs['Ticker_ISIN']:
+            for t in equity_etfs['Ticker']:
                 allocation[t] = eq_weight
 
         if not bond_etfs.empty:
             bond_weight = bond_target / len(bond_etfs)
-            for t in bond_etfs['Ticker_ISIN']:
+            for t in bond_etfs['Ticker']:
                 allocation[t] = bond_weight
 
         # Normalize allocation to sum to 1 exactly
@@ -465,42 +436,7 @@ async def assess(inputs: RiskInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
 
-# -----------------------------
-# /recommend/{bucket} endpoint
-# -----------------------------
-@app.get("/recommend/{bucket}")
-async def recommend(bucket: int):
-    try:
-        portfolio = get_etf_portfolio(bucket) 
-        if not portfolio:
-            raise ValueError(f"No portfolio found for bucket {bucket}")
-
-        alloc = portfolio.get("allocation", {})
-        response = {
-            "name": portfolio.get("name", f"Bucket {bucket} Portfolio"),
-            "allocation": alloc,
-            "target_return": float(portfolio.get("target_return", 0)),
-            "target_volatility": float(portfolio.get("target_volatility", 0)),
-            "sharpe_ratio": float(portfolio.get("sharpe_ratio", 0)),
-            "risk_level": bucket,
-        }
-
-        # Include projections
-        response["projections"] = build_projections(
-            mu=float(response["target_return"]),
-            sigma=float(response["target_volatility"]),
-            years=5
-        )
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating recommendation: {str(e)}")
-
-# -----------------------------
-# /etf-universe endpoint
-# -----------------------------
-@app.get("/etf-universe")
-def get_etf_universe():
-    return ETF_DATA
+# Recommendation and ETF Universe endpoints moved to api_endpoints.py
 
 # ---------- Chatbot (Context-Aware) ----------
 @app.post("/chat")
@@ -549,13 +485,17 @@ def chat(input: ChatIn, request: Request):
         if profile_data:
             return {
                 "reply": (
-                    f"Your risk profile is **{user_risk_profile}**, mapped to risk bucket **{user_risk_bucket}**.\n\n"
-                    f"Recommended portfolio targets roughly: **{typical_alloc_text}**.\n\n"
-                    "Risk categories:\n"
-                    "- **Conservative (low):** mostly bonds, capital preservation.\n"
-                    "- **Balanced (medium):** mix of equities & bonds.\n"
-                    "- **Growth/Aggressive (high):** equity-heavy for higher long-term returns.\n\n"
-                    "The score is calculated from your questionnaire (time horizon, emergency fund, income stability, experience, reaction to losses)."
+                    "Let's break down your investment profile step by step:\n\n"
+                    "1. **Risk Score & Profile:**\n"
+                    f"   - Based on your answers, your risk profile is **{user_risk_profile}** (bucket {user_risk_bucket}).\n"
+                    "   - This score reflects your comfort with risk, your financial situation, and your investment goals.\n"
+                    "   - A higher score means you can take more risk for higher potential returns.\n\n"
+                    "2. **What does this mean?**\n"
+                    "   - Conservative: Focus on safety, mostly bonds.\n"
+                    "   - Balanced: Mix of stocks and bonds for steady growth.\n"
+                    "   - Growth: More stocks, aiming for higher long-term returns.\n\n"
+                    f"3. **Your recommended portfolio split:** {typical_alloc_text}\n\n"
+                    "Next, ask about the graph or ETF allocation for more details!"
                 )
             }
         else:
@@ -567,33 +507,62 @@ def chat(input: ChatIn, request: Request):
             explanation_lines = []
             for field, score in field_scores.items():
                 pretty_field = field.replace("_score", "").replace("_", " ").title()
-                explanation_lines.append(f"- **{pretty_field}** → {score} points")
+                explanation_lines.append(f"- {pretty_field}: {score} points")
             total_score = safe_field(profile_data, "score", sum(field_scores.values()))
             reply_text = (
-                f"Here’s how each field contributed to your total risk score ({total_score}):\n" +
+                "**How your risk score is built:**\n\n"
+                "Each answer you gave adds to your total score. For example, longer time horizons, higher savings, and more experience increase your score.\n\n"
+                f"Your total risk score: **{total_score}**\n\n"
+                "Breakdown by question:\n" +
                 "\n".join(explanation_lines)
             )
             return {"reply": reply_text}
         else:
             return {"reply": "No detailed score breakdown is available yet — complete the assessment first."}
 
-    # ---------- Portfolio Allocation ----------
-    if any(k in msg for k in ["portfolio", "allocation", "portfolio mix"]):
+    # ---------- Portfolio Allocation & ETF Sectors ----------
+    if any(k in msg for k in ["portfolio", "allocation", "portfolio mix", "etf"]):
         if allocation:
             top_holdings = sorted(allocation.items(), key=lambda x: -float(x[1]))[:6]
             top_text_parts = [
-                f"**{etf_name}**: {round(weight*100,1)}%" for etf_name, weight in top_holdings
+                f"{etf_name}: {round(weight*100,1)}%" for etf_name, weight in top_holdings
             ]
             top_text = ", ".join(top_text_parts) if top_text_parts else "N/A"
+            # Try to get sector info if present in summary or etf_portfolio
+            sector_info = ""
+            sectors = summary.get("sectors") or etf_portfolio.get("sectors")
+            if sectors:
+                if isinstance(sectors, dict):
+                    sector_list = [f"{k} ({v}%)" for k, v in sectors.items()]
+                    sector_info = "\n- Sectors invested: " + ", ".join(sector_list)
+                elif isinstance(sectors, list):
+                    sector_info = "\n- Sectors invested: " + ", ".join(sectors)
+                else:
+                    sector_info = f"\n- Sectors invested: {sectors}"
             return {
                 "reply": (
-                    f"Your recommended portfolio (summary): {typical_alloc_text}.\n"
-                    f"Top holdings: {top_text}.\n\n"
-                    "We select ETFs to diversify across regions and asset classes, weighted to match your risk bucket."
+                    "**ETF Portfolio Allocation:**\n\n"
+                    "- Your portfolio is made up of different ETFs (funds that track stocks or bonds).\n"
+                    f"- The recommended split is: {typical_alloc_text}\n"
+                    f"- Top holdings: {top_text}{sector_info}\n\n"
+                    "We choose a mix of ETFs to spread your risk and match your profile.\n\n"
+                    "ETFs are like baskets of investments, so you get instant diversification!"
                 )
             }
         else:
             return {"reply": "Complete the assessment first — then I can show the portfolio allocation."}
+    # ---------- Key Metrics Explanation ----------
+    if any(k in msg for k in ["key metrics", "metrics", "annual return", "volatility", "sharpe", "value at risk", "var"]):
+        return {
+            "reply": (
+                "**Key Portfolio Metrics Explained:**\n\n"
+                "- **Annual Return:** The average amount your portfolio could grow each year, based on history. Higher is better, but not guaranteed.\n"
+                "- **Volatility:** How much your portfolio value might go up and down. Higher volatility means bigger swings (more risk, but also more reward).\n"
+                "- **Sharpe Ratio:** This tells you how much return you get for each unit of risk. A higher Sharpe ratio means a better risk/reward balance.\n"
+                "- **Value at Risk (VaR):** The most you might lose in a bad year, with 95% confidence. For example, a VaR of 10% means there's only a 5% chance you'll lose more than 10% in a year.\n\n"
+                "These numbers help you compare portfolios and understand what to expect!"
+            )
+        }
 
     # ---------- How Score is Calculated ----------
     if any(k in msg for k in ["detail", "determine"]) and ("score" in msg or "risk" in msg):
@@ -617,16 +586,22 @@ def chat(input: ChatIn, request: Request):
             )
         }
 
-    # ---------- Projections ----------
-    if any(k in msg for k in ["performance", "projection", "return"]):
+    # ---------- Projections & Graph Explanation ----------
+    if any(k in msg for k in ["performance", "projection", "return", "graph", "chart", "explain graph", "explain chart"]):
         if projections and projections.get("median"):
             median_final = (projections["median"][-1] - 1) * 100
-            return {
-                "reply": (
-                    f"Our model projects a **median 5-year growth** of about **{median_final:.1f}%** for your portfolio. "
-                    "These are projections based on historical returns and volatility assumptions, not guarantees."
-                )
-            }
+            reply = (
+                "**Understanding Your Investment Chart:**\n\n"
+                "- The chart shows how your money could grow over 5 years.\n"
+                "- The blue lines are your investment projections: the solid line is the most likely path, and the dashed lines show possible best and worst cases.\n"
+                "- The green line shows how much more your savings could grow if you invest a set percentage of your income (like 2%, 10%, or 20%) in the portfolio, compared to just saving the same amount as cash.\n\n"
+                "**How to read it:**\n"
+                "- If the green line is at 30% after 5 years, it means investing your savings could give you 30% more than just keeping it as cash.\n"
+                "- The chart helps you see the benefit of investing regularly versus just saving, and what kind of growth you might expect.\n\n"
+                f"Our model projects a median 5-year growth of about {median_final:.1f}% for your portfolio.\n\n"
+                "Remember: These are estimates, not guarantees. Markets can go up and down!"
+            )
+            return {"reply": reply}
         else:
             return {"reply": "No projection data available yet — it will appear once the portfolio is built."}
 
@@ -634,14 +609,21 @@ def chat(input: ChatIn, request: Request):
     if any(k in msg for k in ["esg", "sustainable", "responsible"]):
         return {
             "reply": (
-                "Yes — we can build ESG/sustainable ETF portfolios. They avoid certain sectors and favour companies "
-                "with higher environmental, social, and governance standards, while maintaining diversification."
+                "**Sustainable Investing:**\n\n"
+                "If you choose ESG (Environmental, Social, Governance) options, your portfolio will focus on companies and funds that are better for the planet and society, while still aiming for good returns.\n\n"
+                "You can invest responsibly and still be diversified!"
             )
         }
 
     # ---------- Fallback ----------
-    # If we reach here, either the user typed something random or assessment is missing
     return {
-        "reply": "I’m MoneyMentorX — I can explain risk categories, how your score is calculated, portfolio allocations, and projections. "
-                 "Start by completing the questionnaire so I can personalise responses."
+        "reply": (
+            "Hi! I'm MoneyMentorX. Here's how I help you:\n\n"
+            "1. I ask you questions to understand your goals and risk comfort.\n"
+            "2. I calculate your risk score and recommend a portfolio split.\n"
+            "3. I show you a chart of how your money could grow, and explain the difference between just saving and investing.\n"
+            "4. I pick a mix of ETFs (funds) to match your profile.\n"
+            "5. I explain key metrics like annual return, volatility, Sharpe ratio, and Value at Risk.\n\n"
+            "Ask me about your risk score, the chart, your ETF allocation, or key metrics for more details!"
+        )
     }

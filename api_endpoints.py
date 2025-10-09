@@ -3,8 +3,8 @@ from fastapi.responses import JSONResponse
 from typing import Dict, Optional
 import pandas as pd
 
-from risk_scoring import calculate_score, determine_risk_profile
-from etf_allocations import get_etf_portfolio, ETF_UNIVERSE, refresh_etf_universe
+from etf_allocations import calculate_score, determine_risk_profile
+from etf_allocations import get_etf_portfolio, ETF_DATA, refresh_etf_universe
 from portfolio_analysis import generate_etf_report, backtest_portfolio
 
 router = APIRouter()
@@ -22,17 +22,20 @@ async def refresh_data():
 async def get_etf_universe_info():
     """Get information about all ETFs in the universe"""
     try:
-        return {
-            ticker: {
-                "name": etf.name,
-                "net_assets": f"${etf.net_assets:.1f}B",
-                "avg_volume": f"{etf.avg_volume:.1f}M",
-                "expense_ratio": f"{etf.expense_ratio:.3%}",
-                "historical_return": f"{etf.historical_return:.2%}",
-                "volatility": f"{etf.volatility:.2%}"
-            }
-            for ticker, etf in ETF_UNIVERSE.items()
-        }
+        # Convert ETF_DATA to a flat dictionary format
+        etf_info = {}
+        for category in ETF_DATA.values():
+            for etf in category:
+                if etf.get('Ticker'):
+                    etf_info[etf['Ticker']] = {
+                        "name": etf['ETF_Name'],
+                        "expense_ratio": f"{etf['expense_ratio']:.3%}",
+                        "asset_type": etf['asset_type'],
+                        "region": etf['region'],
+                        "risk_level": etf['risk_level'],
+                        "sustainability": etf['sustainability']
+                    }
+        return etf_info
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
